@@ -1,0 +1,7 @@
+description = "CARTON"
+version = "%%VERSION%%"
+requires = "cstruct,fmt,lru"
+archive(byte) = "carton.cma"
+archive(native) = "carton.cmxa"
+plugin(byte) = "carton.cma"
+plugin(native) = "carton.cmxs"

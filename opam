@@ -1,0 +1,29 @@
+opam-version: "1.2"
+name:         "carton"
+maintainer:   "Romain Calascibetta <romain.calascibetta@gmail.com>"
+authors:      "Romain Calascibetta <romain.calascibetta@gmail.com>"
+homepage:     "https://github.com/mirage/carton"
+bug-reports:  "https://github.com/mirage/carton/issues"
+dev-repo:     "https://github.com/mirage/carton.git"
+doc:          "https://mirage.github.io/carton/"
+license:      "MIT"
+
+build: [
+  "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "false"
+]
+
+build-test: [
+  [ "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "true" ]
+  [ "ocaml" "pkg/pkg.ml" "test" ]
+]
+
+depends: [
+  "ocamlbuild"     {build}
+  "ocamlfind"      {build}
+  "topkg"          {build}
+  "cstruct"
+  "fmt"
+  "lru"
+]
+
+available: [ocaml-version >= "4.03.0"]
