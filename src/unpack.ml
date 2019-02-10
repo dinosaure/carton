@@ -1,6 +1,3 @@
-module S = Carton_sigs
-module Bucket = Carton_bucket
-
 module Window =
 struct
   type t =

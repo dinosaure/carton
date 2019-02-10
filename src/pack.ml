@@ -1,7 +1,3 @@
-module S = Carton_sigs
-module Rabin = Carton_rabin
-module Radix = Carton_radix
-
 module Option =
 struct
   let value ~default = function
@@ -734,7 +730,7 @@ struct
   [@@@warning "-60"]
 
   module Hash = Hash
-  module Kind = Kind 
+  module Kind = Kind
   module Entry = Entry
   module Monad = Monad
   module Mr = Mr

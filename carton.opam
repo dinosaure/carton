@@ -9,18 +9,12 @@ doc:          "https://dinosaure.github.io/carton/"
 license:      "MIT"
 
 build: [
-  "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "false"
+ ["dune" "subst"] {pinned}
+ ["dune" "build" "-p" name "-j" jobs]
+ ["dune" "runtest" "-p" name] {with-test}
 ]
-
-build-test: [
-  [ "ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "true" ]
-  [ "ocaml" "pkg/pkg.ml" "test" ]
-]
-
 depends: [
-  "ocamlbuild"     {build}
-  "ocamlfind"      {build}
-  "topkg"          {build}
+  "dune" {build}
   "cstruct"
   "fmt"
   "lru"

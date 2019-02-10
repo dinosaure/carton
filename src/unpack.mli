@@ -1,5 +1,3 @@
-module S = Carton_sigs
-
 module Window :
 sig
   type t

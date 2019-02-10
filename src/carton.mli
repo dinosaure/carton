@@ -1,6 +1,6 @@
-module S = Carton_sigs
-module Pack = Carton_pack
-module Unpack = Carton_unpack
+module S = S
+module Pack = Pack
+module Unpack = Unpack
 
-module Radix = Carton_radix
-module Rabin = Carton_rabin
+module Radix = Radix
+module Rabin = Rabin

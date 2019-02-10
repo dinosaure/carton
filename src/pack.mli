@@ -1,7 +1,3 @@
-module S = Carton_sigs
-module Rabin = Carton_rabin
-module Radix = Carton_radix
-
 module type KIND =
 sig
   module A: S.OBJECT
@@ -313,4 +309,3 @@ end with module A = A
      and module Checksum = Checksum
      and module Deflate = Deflate
      and module Delta.Monad = Monad
-
