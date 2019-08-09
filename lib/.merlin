@@ -5,8 +5,6 @@ B /home/dinosaure/.opam/4.07.1/lib/checkseum
 B /home/dinosaure/.opam/4.07.1/lib/digestif
 B /home/dinosaure/.opam/4.07.1/lib/eqaf
 B /home/dinosaure/.opam/4.07.1/lib/fmt
-B /home/dinosaure/.opam/4.07.1/lib/hxd/core
-B /home/dinosaure/.opam/4.07.1/lib/hxd/string
 B /home/dinosaure/.opam/4.07.1/lib/ocaml
 B /home/dinosaure/.opam/4.07.1/lib/optint
 B /home/dinosaure/.opam/4.07.1/lib/seq
@@ -21,8 +19,6 @@ S /home/dinosaure/.opam/4.07.1/lib/checkseum
 S /home/dinosaure/.opam/4.07.1/lib/digestif
 S /home/dinosaure/.opam/4.07.1/lib/eqaf
 S /home/dinosaure/.opam/4.07.1/lib/fmt
-S /home/dinosaure/.opam/4.07.1/lib/hxd/core
-S /home/dinosaure/.opam/4.07.1/lib/hxd/string
 S /home/dinosaure/.opam/4.07.1/lib/ocaml
 S /home/dinosaure/.opam/4.07.1/lib/optint
 S /home/dinosaure/.opam/4.07.1/lib/seq

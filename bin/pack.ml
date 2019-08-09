@@ -18,16 +18,6 @@ let z = Dd.bigstring_create Dd.io_buffer_size
 let w = Dd.make_window ~bits:15
 let allocate _ = w
 
-let colors = Array.make 256 `None
-let notzen =
-  for i = 0 to 31   do colors.(i) <- `Style (`Fg, `bit24 (0xaf, 0xd7, 0xff)) done ;
-  for i = 48 to 57  do colors.(i) <- `Style (`Fg, `bit24 (0xaf, 0xdf, 0x77)) done ;
-  for i = 65 to 90  do colors.(i) <- `Style (`Fg, `bit24 (0xff, 0xaf, 0x5f)) done ;
-  for i = 97 to 122 do colors.(i) <- `Style (`Fg, `bit24 (0xff, 0xaf, 0xd7)) done ;
-  Hxd.O.colorscheme_of_array colors
-
-let cfg = Hxd.O.xxd ~uppercase:true notzen
-
 let raw_of_v = Carton.raw
 
 let hash_of_v v =
@@ -41,8 +31,6 @@ let hash_of_v v =
     | `D -> Digestif.SHA1.feed_string ctx (Fmt.strf "tag %d\000" len) in
   let ctx = Digestif.SHA1.feed_bigstring ctx (raw_of_v v) in
   Digestif.SHA1.get ctx
-
-let () = Hxd.Fmt.set_style_renderer Fmt.stdout `Ansi
 
 let () =
   if not (Sys.file_exists Sys.argv.(1))
@@ -63,9 +51,7 @@ let () =
     Carton.of_offset unix ~map t raw ~cursor:offset in
   let v = Us.prj fiber in
   let hash = hash_of_v v in
-  let raw = raw_of_v v in
 
-  Fmt.pr "@[<hov>%a@]\n\n%!" (Hxd_string.pp cfg) (Bigstringaf.to_string raw) ;
   Fmt.pr "> %a.\n%!" Digestif.SHA1.pp hash ;
 
   let fiber = Carton.path_of_offset unix ~map t ~cursor:offset in
