@@ -28,15 +28,13 @@ let notzen =
 
 let cfg = Hxd.O.xxd ~uppercase:true notzen
 
-let raw_of_v { Carton.raw; Carton.len; _ } =
-  if raw.Carton.flip
-  then Bigstringaf.sub raw.Carton.raw0 ~off:0 ~len
-  else Bigstringaf.sub raw.Carton.raw1 ~off:0 ~len
+let raw_of_v = Carton.raw
 
-let hash_of_v ({ Carton.kind; Carton.len; _ } as v) =
+let hash_of_v v =
   let ctx = Digestif.SHA1.empty in
+  let len = Carton.len v in
 
-  let ctx = match kind with
+  let ctx = match Carton.kind v with
     | `A -> Digestif.SHA1.feed_string ctx (Fmt.strf "commit %d\000" len)
     | `B -> Digestif.SHA1.feed_string ctx (Fmt.strf "tree %d\000" len)
     | `C -> Digestif.SHA1.feed_string ctx (Fmt.strf "blob %d\000" len)
@@ -60,12 +58,28 @@ let () =
   let fiber =
     let ( >>= ) = unix.bind in
     Carton.weight_of_offset
-      unix ~map t offset >>= fun weight ->
+      unix ~map t ~weight:Carton.null ~cursor:offset >>= fun weight ->
     let raw = Carton.make_raw ~weight in
-    Carton.of_offset unix ~map t raw offset in
+    Carton.of_offset unix ~map t raw ~cursor:offset in
   let v = Us.prj fiber in
   let hash = hash_of_v v in
   let raw = raw_of_v v in
 
   Fmt.pr "@[<hov>%a@]\n\n%!" (Hxd_string.pp cfg) (Bigstringaf.to_string raw) ;
+  Fmt.pr "> %a.\n%!" Digestif.SHA1.pp hash ;
+
+  let fiber = Carton.path_of_offset unix ~map t ~cursor:offset in
+  let path = Us.prj fiber in
+
+  Fmt.pr "> @[<hov>%a@]\n%!" Carton.pp_path path ;
+
+  let fiber =
+    let ( >>= ) = unix.bind in
+    Carton.weight_of_offset
+      unix ~map t ~weight:Carton.null ~cursor:offset >>= fun weight ->
+    let raw = Carton.make_raw ~weight in
+    Carton.of_offset_with_path unix ~map t ~path raw ~cursor:offset in
+  let v = Us.prj fiber in
+  let hash = hash_of_v v in
+
   Fmt.pr "> %a.\n%!" Digestif.SHA1.pp hash

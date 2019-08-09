@@ -36,19 +36,31 @@ end
 
 type 'fd t
 
-type raw =
-  { raw0 : bigstring
-  ; raw1 : bigstring
-  ; flip : bool }
+type weight [@@immediate]
 
-type v =
-  { kind : [ `A | `B | `C | `D ]
-  ; raw  : raw
-  ; len  : int }
+val null : weight
 
-val make_raw : weight:int -> raw
+type raw
+
+val make_raw : weight:weight -> raw
+
+type v
+
+val kind : v -> [ `A | `B | `C | `D ]
+val raw : v -> bigstring
+val len : v -> int
 
 val make : 'fd -> z:Zz.bigstring -> allocate:(int -> Zz.window) -> (Uid.t -> int) -> 'fd t
-val weight_of_offset : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> int -> (int, 's) io
-val weight_of_uid : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> Uid.t -> (int, 's) io
-val of_offset : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> raw -> int -> (v, 's) io
+
+val weight_of_offset : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> weight:weight -> cursor:int -> (weight, 's) io
+val weight_of_uid : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> weight:weight -> Uid.t -> (weight, 's) io
+
+val of_offset : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> raw -> cursor:int -> (v, 's) io
+val of_uid : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> raw -> Uid.t -> (v, 's) io
+
+type path
+
+val pp_path : path Fmt.t
+
+val path_of_offset : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> cursor:int -> (path, 's) io
+val of_offset_with_path : 's scheduler -> map:('fd, 's) W.map -> 'fd t -> path:path -> raw -> cursor:int -> (v, 's) io
