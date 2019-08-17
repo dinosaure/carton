@@ -14,9 +14,45 @@ let map : (fd, Us.t) Carton.W.map =
       Bigarray.char Bigarray.c_layout false [| len |] in
   Us.inj (Bigarray.array1_of_genarray payload)
 
+module IO : Carton.IO with type 'a t = 'a Lwt.t = struct
+  type 'a t = 'a Lwt.t
+  type 'a u = 'a Lwt.u
+
+  let bind = Lwt.bind
+  let return = Lwt.return
+
+  let list_iteri = Lwt_list.iteri_s
+
+  type mutex = Lwt_mutex.t
+
+  let mutex = Lwt_mutex.create
+  let mutex_lock = Lwt_mutex.lock
+  let mutex_unlock = Lwt_mutex.unlock
+
+  let wakeup = Lwt.wakeup
+  let async f = Lwt.async (fun () -> Lwt_preemptive.detach f ())
+  let task = Lwt.task
+  let join = Lwt.join
+end
+
+module Verify = Carton.Verify(IO)
+module Ls = Verify.Scheduler
+
+let lwt =
+  let open Lwt.Infix in
+  { Carton.bind= (fun x f -> Ls.inj (Ls.prj x >>= fun x -> Ls.prj (f x)))
+  ; Carton.return = (fun x -> Ls.inj (Lwt.return x)) }
+
+let lwt_map : (fd, Ls.t) Carton.W.map =
+  fun fd ~pos len ->
+  let payload =
+    let len = min (fd.mx - pos) len in
+    Mmap.V1.map_file fd.fd ~pos:(Int64.of_int pos)
+      Bigarray.char Bigarray.c_layout false [| len |] in
+  Ls.inj (Lwt.return (Bigarray.array1_of_genarray payload))
+
 let z = Dd.bigstring_create Dd.io_buffer_size
-let w = Dd.make_window ~bits:15
-let allocate _ = w
+let allocate bits = Dd.make_window ~bits
 
 let raw_of_v = Carton.raw
 
@@ -31,6 +67,21 @@ let hash_of_v v =
     | `D -> Digestif.SHA1.feed_string ctx (Fmt.strf "tag %d\000" len) in
   let ctx = Digestif.SHA1.feed_bigstring ctx (raw_of_v v) in
   Digestif.SHA1.get ctx
+
+let digest ~kind ?(off= 0) ?len buf =
+  let len = match len with
+    | Some len -> len
+    | None -> Bigstringaf.length buf - off in
+  let ctx = Digestif.SHA1.empty in
+
+  let ctx = match kind with
+    | `A -> Digestif.SHA1.feed_string ctx (Fmt.strf "commit %d\000" len)
+    | `B -> Digestif.SHA1.feed_string ctx (Fmt.strf "tree %d\000" len)
+    | `C -> Digestif.SHA1.feed_string ctx (Fmt.strf "blob %d\000" len)
+    | `D -> Digestif.SHA1.feed_string ctx (Fmt.strf "tag %d\000" len) in
+  let ctx = Digestif.SHA1.feed_bigstring ctx ~off ~len buf in
+  Digestif.SHA1.get ctx
+
 
 let () =
   if not (Sys.file_exists Sys.argv.(1))
@@ -68,4 +119,57 @@ let () =
   let v = Us.prj fiber in
   let hash = hash_of_v v in
 
-  Fmt.pr "> %a.\n%!" Digestif.SHA1.pp hash
+  Fmt.pr "> %a.\n%!" Digestif.SHA1.pp hash ;
+  let ic = open_in Sys.argv.(1) in
+  let allocate bits = Dd.make_window ~bits in
+  let decoder = Carton.Fpass.decoder ~o:(Bigstringaf.create 0x1000) ~allocate (`Channel ic) in
+  let children = Hashtbl.create 0x100 in
+  let where = Hashtbl.create 0x100 in
+  let weight = Hashtbl.create 0x100 in
+  let matrix = ref [||] in
+
+  let rec go decoder = match Carton.Fpass.decode decoder with
+    | `Await _ | `Peek _ -> assert false
+    | `Entry ({ Carton.Fpass.kind= Base _; offset; size; }, decoder) ->
+      if Array.length !matrix <> Carton.Fpass.number decoder
+      then ( Fmt.epr "%d object(s).\n%!" (Carton.Fpass.number decoder)
+           ; matrix := Array.make (Carton.Fpass.number decoder) Verify.unresolved_node ) ;
+
+      let n = Carton.Fpass.count decoder - 1 in
+      Hashtbl.add weight offset size ;
+      Hashtbl.add where offset n ;
+      !matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
+      go decoder
+    | `Entry ({ Carton.Fpass.kind= Ofs { sub; source; target; }; offset; _ }, decoder) ->
+      if Array.length !matrix <> Carton.Fpass.number decoder
+      then ( Fmt.epr "%d object(s).\n%!" (Carton.Fpass.number decoder)
+           ; matrix := Array.make (Carton.Fpass.number decoder) Verify.unresolved_node ) ;
+
+      let n = Carton.Fpass.count decoder - 1 in
+      Hashtbl.add weight (offset - sub) source ;
+      Hashtbl.add weight offset target ;
+      Hashtbl.add where offset n ;
+      ( try let v = Hashtbl.find children (`Ofs (offset - sub)) in Hashtbl.add children (`Ofs (offset - sub)) (offset :: v)
+        with Not_found -> Hashtbl.add children (`Ofs (offset - sub)) [ offset ] ) ;
+      go decoder
+    | `Entry _ -> assert false (* REF *)
+    | `End -> close_in ic
+    | `Malformed err -> failwith err in
+
+  go decoder ;
+
+  let oracle =
+    { Carton.where= (fun ~cursor -> Hashtbl.find where cursor)
+    ; children= (fun ~cursor ~uid -> match Hashtbl.find_opt children (`Ofs cursor), Hashtbl.find_opt children (`Ref uid) with
+          | Some a, Some b -> List.sort_uniq (compare : int -> int -> int) (a @ b)
+          | Some l, None | None, Some l -> l
+          | None, None -> [])
+    ; digest= digest
+    ; weight= (fun ~cursor -> Hashtbl.find weight cursor) } in
+
+  let matrix = !matrix in
+  let fiber = Verify.verify ~map:lwt_map ~oracle t ~matrix in
+
+  Lwt_preemptive.init 2 4 ignore ;
+  Lwt_main.run fiber ;
+  Array.iter (fun s -> Fmt.epr "%a\n%!" Digestif.SHA1.pp (Verify.uid_of_status s)) matrix

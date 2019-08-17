@@ -30,6 +30,8 @@ let unsafe_get_char : bigstring -> int -> char = Bigstringaf.get
 
 type checksum
 
+module Fpass = Fpass
+
 module W = struct
   type 'fd t =
     { mutable cur : int
@@ -70,7 +72,7 @@ module W = struct
     try
       Array.iter (function
           | Some ({ offset; length; _ } as s) ->
-            if w >= offset && w < offset + length
+            if w >= offset && w < offset + length && length - (w - offset) >= 20 (* XXX(dinosaure): explain the last condition. *)
             then ( slice := Some s ; raise_notrace Found )
           | None -> () )
         t.w ;
@@ -84,6 +86,7 @@ module Uid = struct
   let length = Digestif.SHA1.digest_size
   let of_raw_string : string -> t = Digestif.SHA1.of_raw_string
   let pp = Digestif.SHA1.pp
+  let null = Digestif.SHA1.digest_string ""
 end
 
 type 'fd t =
@@ -112,7 +115,7 @@ let weight_of_delta
     let ( >>= ) = bind in
     let decoder = Zh.M.decoder ~o:t.tmp ~allocate:t.allocate `Manual in
     let rec go cursor decoder = match Zh.M.decode decoder with
-      | `End _ -> assert false (* XXX(dinosaure): [`End] never appears before [`Header]. *)
+      | `End -> assert false (* XXX(dinosaure): [`End] never appears before [`Header]. *)
       | `Malformed err -> failwith err
       | `Header (src_len, dst_len, _) -> return (max weight (max src_len dst_len))
       | `Await decoder ->
@@ -122,7 +125,9 @@ let weight_of_delta
           (* XXX(dinosaure): End of stream, [Zh] should return [`Malformed] then. *)
           (go[@tailcall]) cursor decoder
         | Some slice ->
-          let decoder = Zh.M.src decoder slice.W.payload 0 slice.W.length in
+          let off = cursor - slice.W.offset in
+          let len = slice.W.length - off in
+          let decoder = Zh.M.src decoder slice.W.payload off len in
           (go[@tailcall]) (slice.W.offset + slice.W.length) decoder in
     let off = cursor - slice.W.offset in
     let len = slice.W.length - off in
@@ -146,7 +151,7 @@ let header_of_ref_delta ({ bind; return; } as s) ~map t cursor slice =
           incr i_pos ;
           if !i_pos == !slice.W.length
           then ( assert (!slice != next_slice)
-               ; i_pos := 0
+               ; i_pos := (!slice.W.offset + !slice.W.length) - next_slice.W.offset
                ; slice := next_slice ) in
         return consume in
   fiber >>= fun consume ->
@@ -166,7 +171,7 @@ let header_of_ref_delta ({ bind; return; } as s) ~map t cursor slice =
 
   return (uid, !i_pos, !slice)
 
-let header_of_ofs_detla ({ bind; return; } as s) ~map t cursor slice =
+let header_of_ofs_delta ({ bind; return; } as s) ~map t cursor slice =
   let ( >>= ) = bind in
   let slice = ref slice in
   let i_pos = ref (cursor - !slice.W.offset) in
@@ -183,7 +188,7 @@ let header_of_ofs_detla ({ bind; return; } as s) ~map t cursor slice =
           incr i_pos ;
           if !i_pos == !slice.W.length
           then ( assert (!slice != next_slice)
-               ; i_pos := 0
+               ; i_pos := (!slice.W.offset + !slice.W.length) - next_slice.W.offset
                ; slice := next_slice ) in
         return consume in
   fiber >>= fun consume ->
@@ -219,7 +224,7 @@ let header_of_entry ({ bind; return; } as s) ~map t cursor slice =
           incr i_pos ;
           if !i_pos == !slice.W.length
           then ( assert (!slice != next_slice)
-               ; i_pos := 0
+               ; i_pos := (!slice.W.offset + !slice.W.length) - next_slice.W.offset
                ; slice := next_slice ) in
         return consume in
   fiber >>= fun consume ->
@@ -254,7 +259,7 @@ and weight_of_ofs_delta
   = fun ({ bind; _ } as s) ~map t ~weight ~anchor ~cursor slice ->
     let ( >>= ) = bind in
 
-    header_of_ofs_detla s ~map t cursor slice >>= fun (base_offset, pos, slice) ->
+    header_of_ofs_delta s ~map t cursor slice >>= fun (base_offset, pos, slice) ->
     weight_of_delta s ~map t ~weight ~cursor:(slice.W.offset + pos) slice >>= fun weight ->
     (weight_of_offset[@tailcall]) s ~map t ~weight ~cursor:(anchor - base_offset)
 
@@ -330,14 +335,16 @@ let uncompress
            [`Flush]. *)
         return { kind; raw; len= !l; }
       | `Flush decoder ->
-        assert (not !p) ; p := true ;
         l := bigstring_length o - Zz.M.dst_rem decoder ;
+        assert (not !p) ; p := true ;
         let decoder = Zz.M.flush decoder in
         (go[@tailcall]) cursor decoder
       | `Await decoder ->
         W.load s ~map t.ws cursor >>= function
         | Some slice ->
-          let decoder = Zz.M.src decoder slice.W.payload 0 slice.W.length in
+          let off = cursor - slice.W.offset in
+          let len = slice.W.length - off in
+          let decoder = Zz.M.src decoder slice.W.payload off len in
           (go[@tailcall]) (slice.W.offset + slice.W.length) decoder
         | None ->
           let decoder = Zz.M.src decoder Dd.bigstring_empty 0 0 in
@@ -356,7 +363,7 @@ let of_delta
     let decoder = Zh.M.decoder ~o:t.tmp ~allocate:t.allocate `Manual in
 
     let rec go cursor decoder = match Zh.M.decode decoder with
-      | `End _ -> return { kind; raw; len= !l; }
+      | `End -> return { kind; raw; len= !l; }
       | `Malformed err -> failwith err
       | `Header (src_len, dst_len, decoder) ->
         let source = get_source raw in
@@ -375,7 +382,9 @@ let of_delta
           let decoder = Zh.M.src decoder Dd.bigstring_empty 0 0 in
           (go[@tailcall]) cursor decoder
         | Some slice ->
-          let decoder = Zh.M.src decoder slice.W.payload 0 slice.W.length in
+          let off = cursor - slice.W.offset in
+          let len = slice.W.length - off in
+          let decoder = Zh.M.src decoder slice.W.payload off len in
           (go[@tailcall]) (slice.W.offset + slice.W.length) decoder in
     let off = cursor - slice.W.offset in
     let len = slice.W.length - off in
@@ -387,7 +396,7 @@ let rec of_ofs_delta
   = fun ({ bind; _ } as s) ~map t raw ~anchor ~cursor slice ->
     let ( >>= ) = bind in
 
-    header_of_ofs_detla s ~map t cursor slice >>= fun (base_offset, pos, slice) ->
+    header_of_ofs_delta s ~map t cursor slice >>= fun (base_offset, pos, slice) ->
     of_offset s ~map t (flip raw) ~cursor:(anchor - base_offset) >>= fun v ->
     of_delta s ~map t v.kind raw ~cursor:(slice.W.offset + pos) slice
 
@@ -447,7 +456,7 @@ let rec fill_path_from_ofs_delta
   = fun ({ bind; _ } as s) ~map t ~depth path ~anchor ~cursor slice ->
     let ( >>= ) = bind in
 
-    header_of_ofs_detla s ~map t cursor slice >>= fun (base_offset, _, _) ->
+    header_of_ofs_delta s ~map t cursor slice >>= fun (base_offset, _, _) ->
     (fill_path_from_offset[@tailcall]) s ~map t ~depth:(succ depth) path ~cursor:(anchor - base_offset)
 
 and fill_path_from_ref_delta
@@ -519,7 +528,7 @@ let of_offset_with_source
         uncompress s ~map t `D raw ~cursor:(slice.W.offset + pos) slice
       | 0b110 ->
         let cursor = slice.W.offset + pos in
-        header_of_ofs_detla s ~map t cursor slice >>= fun (_, pos, slice) ->
+        header_of_ofs_delta s ~map t cursor slice >>= fun (_, pos, slice) ->
         of_delta s ~map t kind raw ~cursor:(slice.W.offset + pos) slice
       | 0b111 ->
         let cursor = slice.W.offset + pos in
@@ -536,7 +545,7 @@ let base_of_offset
     | Some slice ->
       header_of_entry s ~map t cursor slice >>= fun (hdr, _, pos, slice) ->
       let kind = match hdr with
-        | 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> assert false in
+        | 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> failwith "Invalid object" in
       uncompress s ~map t kind raw ~cursor:(slice.W.offset + pos) slice
 
 let base_of_path { depth; path; } = path.(depth - 1)
@@ -554,3 +563,239 @@ let of_offset_with_path
       then return v
       else (go[@tailcall]) (pred depth) (flip raw) in
     if path.depth > 1 then go (path.depth - 1) (flip raw) else return base
+
+type digest = kind:[ `A | `B | `C | `D ] -> ?off:int -> ?len:int -> bigstring -> Uid.t
+
+let uid_of_offset
+  : type fd s. s scheduler -> map:(fd, s) W.map -> digest:digest -> fd t -> raw -> cursor:int -> ([ `A | `B | `C | `D ] * Uid.t, s) io
+  = fun ({ bind; return; } as s) ~map ~digest t raw ~cursor ->
+    let ( >>= ) = bind in
+    W.load s ~map t.ws cursor >>= function
+    | None -> Fmt.failwith "Reach end of pack (ask: %d, [weight_of_offset])" cursor
+    | Some slice ->
+      header_of_entry s ~map t cursor slice >>= fun (hdr, _, pos, slice) ->
+      let kind = match hdr with
+        | 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> failwith "Invalid object" in
+      uncompress s ~map t kind raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+      return (kind, digest ~kind ~len:v.len (get_payload raw))
+
+let uid_of_offset_with_source
+  : type fd s. s scheduler -> map:(fd, s) W.map -> digest:digest -> fd t -> kind:[ `A | `B | `C | `D ] -> raw -> cursor:int -> (Uid.t, s) io
+  = fun ({ bind; return; } as s) ~map ~digest t ~kind raw ~cursor ->
+    let ( >>= ) = bind in
+    W.load s ~map t.ws cursor >>= function
+    | None -> Fmt.failwith "Reach end of pack (ask: %d, [weight_of_offset])" cursor
+    | Some slice ->
+      header_of_entry s ~map t cursor slice >>= fun (hdr, _, pos, slice) ->
+
+      match hdr with
+      | 0b000 | 0b101 -> failwith "bad type"
+      | 0b001 ->
+        assert (kind = `A) ;
+        uncompress s ~map t `A raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+        return (digest ~kind ~len:v.len (get_payload raw))
+      | 0b010 ->
+        assert (kind = `B) ;
+        uncompress s ~map t `B raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+        return (digest ~kind ~len:v.len (get_payload raw))
+      | 0b011 ->
+        assert (kind = `C) ;
+        uncompress s ~map t `C raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+        return (digest ~kind ~len:v.len (get_payload raw))
+      | 0b100 ->
+        assert (kind = `D) ;
+        uncompress s ~map t `D raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+        return (digest ~kind ~len:v.len (get_payload raw))
+      | 0b110 ->
+        header_of_ofs_delta s ~map t (slice.W.offset + pos) slice >>= fun (_, pos, slice) ->
+        of_delta s ~map t kind raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+        return (digest ~kind ~len:v.len (get_payload raw))
+      | 0b111 ->
+        header_of_ref_delta s ~map t (slice.W.offset + pos) slice >>= fun (_, pos, slice) ->
+        of_delta s ~map t kind raw ~cursor:(slice.W.offset + pos) slice >>= fun v ->
+        return (digest ~kind ~len:v.len (get_payload raw))
+      | _ -> assert false
+
+type node =
+  | Node of int * Uid.t * node list
+  | Leaf of int * Uid.t
+and tree = Base of int * Uid.t * node list
+
+type children = cursor:int -> uid:Uid.t -> int list
+type where = cursor:int -> int
+
+type oracle =
+  { digest : digest
+  ; children : children
+  ; where : where
+  ; weight : cursor:int -> int } (* TODO: hide it with [weight]. *)
+
+module type IO = sig
+  type 'a t
+
+  val bind : 'a t -> ('a -> 'b t) -> 'b t
+  val return : 'a -> 'a t
+
+  val list_iteri : (int -> 'a -> unit t) -> 'a list -> unit t
+
+  type mutex
+
+  val mutex : unit -> mutex
+  val mutex_lock : mutex -> unit t
+  val mutex_unlock : mutex -> unit
+
+  type 'a u
+
+  val task : unit -> 'a t * 'a u
+  val async : (unit -> 'a t) -> unit
+  val join : unit t list -> unit t
+  val wakeup : 'a u -> 'a -> unit
+end
+
+module Verify (IO : IO) = struct
+  module Scheduler = Make(IO)
+
+  let s =
+    let open Scheduler in
+    { bind= (fun x f -> inj (IO.bind (prj x) (fun x -> prj (f x))))
+    ; return= (fun x -> inj (IO.return x)) }
+
+  let ( >>= ) = IO.bind
+
+  type status =
+    | Unresolved_base of int
+    | Unresolved_node
+    | Resolved_base of Uid.t
+    | Resolved_node of Uid.t
+
+  let uid_of_status = function
+    | Resolved_node uid | Resolved_base uid -> uid
+    | _ -> Fmt.invalid_arg "Current status is not resolved"
+
+  let rec nodes_of_offsets
+    : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> kind:[ `A | `B | `C | `D ] -> raw -> cursors:int list -> node list IO.t
+    = fun ~map ~oracle t ~kind raw ~cursors ->
+      match cursors with
+      | [] -> invalid_arg "Expect at least one cursor"
+      | [ cursor ] ->
+        uid_of_offset_with_source s ~map ~digest:oracle.digest t ~kind raw ~cursor |> Scheduler.prj >>= fun uid ->
+        ( match oracle.children ~cursor ~uid with
+          | [] -> IO.return [ Leaf (cursor, uid) ]
+          | cursors ->
+            nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~cursors >>= fun nodes ->
+            IO.return [ Node (cursor, uid, nodes) ] )
+      | cursors ->
+        let source = get_source raw in
+        let source = Bigstringaf.copy ~off:0 ~len:(Bigstringaf.length source) source in (* allocation *)
+        let res = Array.make (List.length cursors) (Leaf ((-1), Uid.null)) in
+
+        IO.list_iteri (fun i cursor ->
+            uid_of_offset_with_source s ~map ~digest:oracle.digest t ~kind raw ~cursor |> Scheduler.prj >>= fun uid ->
+            match oracle.children ~cursor ~uid with
+            | [] ->
+              res.(i) <- Leaf (cursor, uid) ; IO.return ()
+            | cursors ->
+              nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~cursors >>= fun nodes ->
+              Bigstringaf.blit source ~src_off:0 (get_source raw) ~dst_off:0 ~len:(Bigstringaf.length source) ;
+              res.(i) <- Node (cursor, uid, nodes) ; IO.return () )
+          cursors >>= fun () ->
+        IO.return (Array.to_list res)
+
+  let weight_of_tree
+    : oracle:oracle -> cursor:int -> int
+    = fun ~oracle ~cursor ->
+      let rec go cursor w0 =
+        let w1 = oracle.weight ~cursor in
+        match oracle.children ~cursor ~uid:Uid.null with
+        | [] -> (max : int -> int -> int) w0 w1
+        | cursors ->
+          let w1 = ref w1 in
+          List.iter (fun cursor -> w1 := go cursor !w1) cursors ;
+          (max : int -> int -> int) w0 !w1 in
+      go cursor 0 (* XXX(dinosaure): we can do something which is tail-rec, TODO! *)
+
+  let resolver
+    : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> cursor:int -> tree IO.t
+    = fun ~map ~oracle t ~cursor ->
+      let weight = weight_of_tree ~oracle ~cursor in
+      let raw = make_raw ~weight in (* allocation *)
+      uid_of_offset s ~map ~digest:oracle.digest t raw ~cursor |> Scheduler.prj >>= fun (kind, uid) ->
+      match oracle.children ~cursor ~uid with
+      | [] -> IO.return (Base (cursor, uid, []))
+      | cursors ->
+        nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~cursors >>= fun nodes ->
+        IO.return (Base (cursor, uid, nodes))
+
+  let update
+    : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> cursor:int -> matrix:status array -> unit IO.t
+    = fun ~map ~oracle t ~cursor ~matrix ->
+      resolver ~map ~oracle t ~cursor >>= fun (Base (cursor, uid, children)) ->
+      matrix.(oracle.where ~cursor) <- Resolved_base uid ;
+      let rec go = function
+        | Leaf (cursor, uid) ->
+          matrix.(oracle.where ~cursor) <- Resolved_node uid
+        | Node (cursor, uid, children) ->
+          matrix.(oracle.where ~cursor) <- Resolved_node uid ; List.iter go children in
+      List.iter go children ; IO.return ()
+
+  type 'a m = { mutable v : 'a; m : IO.mutex }
+
+  let is_not_unresolved_base = function
+    | Unresolved_base _ -> false
+    | _ -> true
+
+  let unresolved_base ~cursor = Unresolved_base cursor
+  let unresolved_node = Unresolved_node
+
+  let dispatcher
+    : type fd. thread:int -> map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> matrix:status array -> mutex:int m -> unit IO.t
+    = fun ~thread:_ ~map ~oracle t ~matrix ~mutex ->
+      let rec go () =
+        IO.mutex_lock mutex.m >>= fun () ->
+        while mutex.v < Array.length matrix && is_not_unresolved_base matrix.(mutex.v)
+        do mutex.v <- mutex.v + 1 done ;
+        if mutex.v >= Array.length matrix
+        then ( IO.mutex_unlock mutex.m ; IO.return () )
+        else ( let root = mutex.v in mutex.v <- mutex.v + 1 ; IO.mutex_unlock mutex.m ;
+               let[@warning "-8"] Unresolved_base cursor = matrix.(root) in (* XXX(dinosaure): Oh god, save me! *)
+               update ~map ~oracle t ~cursor ~matrix >>= fun () ->
+               (go[@tailcall]) () ) in
+      go ()
+
+  [@@@warning "-26"]
+
+  let verify
+    : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> matrix:status array -> unit IO.t
+    = fun ~map ~oracle t ~matrix ->
+      let mutex = { v= 0; m= IO.mutex () } in
+      let t0 = t in
+
+      let z1 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
+      let w1 = t0.allocate 15 in
+      let t1 = { t0 with ws= W.make t0.ws.W.fd; tmp= z1; allocate= (fun _ -> w1) } in
+
+      let z2 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
+      let w2 = t0.allocate 15 in
+      let t2 = { t0 with ws= W.make t0.ws.W.fd; tmp= z2; allocate= (fun _ -> w2) } in
+
+      let z3 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
+      let w3 = t0.allocate 15 in
+      let t3 = { t0 with ws= W.make t0.ws.W.fd; tmp= z3; allocate= (fun _ -> w3) } in
+
+      let z4 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
+      let w4 = t0.allocate 15 in
+      let t4 = { t0 with ws= W.make t0.ws.W.fd; tmp= z4; allocate= (fun _ -> w4) } in
+
+      let thread ~n ~u t () = dispatcher ~thread:n ~map ~oracle t ~matrix ~mutex >>= fun () -> IO.wakeup u () ; IO.return () in
+      let th1, u1 = IO.task () in
+      let th2, u2 = IO.task () in
+      let th3, u3 = IO.task () in
+      let th4, u4 = IO.task () in
+
+      IO.async (thread ~n:1 ~u:u1 t1) ;
+      IO.async (thread ~n:2 ~u:u2 t2) ;
+      IO.async (thread ~n:3 ~u:u3 t3) ;
+      IO.async (thread ~n:4 ~u:u4 t4) ;
+
+      IO.join [ th1; th2; th3; th4; ]
+end
