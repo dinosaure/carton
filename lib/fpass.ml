@@ -52,7 +52,7 @@ and kind =
   | Ofs of { sub : int; source : int; target : int; }
   | Ref of { ptr : Uid.t; source : int; target : int; }
 and entry =
-  { offset : int; kind : kind; size : int; }
+  { offset : int; kind : kind; size : int; consumed : int; }
 
 let with_source source entry = match entry.kind with
   | Ofs { sub; target; _ } -> { entry with kind= Ofs { sub; source; target; }; }
@@ -189,7 +189,7 @@ let rec decode d = match d.s with
         let z = Zz.M.reset d.z in
         let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
         let k = match kind with 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> assert false in
-        let e = { offset= d.r; kind= Base k; size= !size; } in
+        let e = { offset= d.r; kind= Base k; size= !size; consumed= 0; } in
 
         decode { d with i_pos= !p; r= d.r + (!p - d.i_pos); c= succ d.c; z
                       ; s= Inflate e; k= decode
@@ -213,7 +213,7 @@ let rec decode d = match d.s with
 
           let z = Zz.M.reset d.z in
           let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
-          let e = { offset; kind= Ofs { sub= !base_offset; source= (-1); target= (-1); }; size= !size; } in
+          let e = { offset; kind= Ofs { sub= !base_offset; source= (-1); target= (-1); }; size= !size; consumed= 0; } in
 
           decode { d with i_pos= !p; r= d.r + (!p - d.i_pos); c= succ d.c; z
                         ; s= Inflate e; k= decode
@@ -228,6 +228,7 @@ let rec decode d = match d.s with
       | `Await z ->
         let len = i_rem d - Zz.M.src_rem z in
         refill decode { d with z; i_pos= d.i_pos + len; r= d.r + len
+                             ; s= Inflate entry
                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
       | `Flush z ->
         go (Zz.M.flush z)
@@ -239,6 +240,7 @@ let rec decode d = match d.s with
                              ; z; s= if d.c == d.n then Hash else Entry
                              ; k= decode
                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len } in
+        let entry = { entry with consumed= decoder.r - entry.offset } in
         `Entry (entry, decoder) in
     go d.z
   | Inflate ({ kind= (Ofs _ | Ref _); _ } as entry) ->
@@ -276,6 +278,7 @@ let rec decode d = match d.s with
                              ; z; s= if d.c == d.n then Hash else Entry
                              ; k= decode
                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len } in
+        let entry = { entry with consumed= decoder.r - entry.offset } in
         let entry = with_source !source entry in
         let entry = with_target !target entry in
         `Entry (entry, decoder) in

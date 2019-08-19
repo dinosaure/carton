@@ -92,7 +92,12 @@ module M : sig
   type decoder
 
   type src = [ `Channel of in_channel | `String of string | `Manual ]
-  type decode = [ `Await of decoder | `Header of (int * int * decoder) | `End | `Malformed of string ]
+  type decode = [ `Await of decoder | `Header of (int * int * decoder) | `End of decoder | `Malformed of string ]
+
+  val src_len : decoder -> int
+  val dst_len : decoder -> int
+  val src_rem : decoder -> int
+  val dst_rem : decoder -> int
 
   val src : decoder -> Zz.bigstring -> int -> int -> decoder
   val dst : decoder -> H.bigstring -> int -> int -> decoder
@@ -112,7 +117,12 @@ end = struct
     ; i_len : int
     ; o : Zz.bigstring
     ; z : Zz.M.decoder
-    ; h : H.M.decoder }
+    ; h : H.M.decoder
+    ; k : decoder -> decode }
+  and decode = [ `Await of decoder
+               | `Header of (int * int * decoder)
+               | `End of decoder
+               | `Malformed of string ]
 
   let refill k d = match d.src with
     | `String _ ->
@@ -122,13 +132,13 @@ end = struct
       let res = input_bigstring ic d.i 0 (Dd.bigstring_length d.i) in
       let z = Zz.M.src d.z d.i 0 res in
       k { d with z }
-    | `Manual -> `Await d
+    | `Manual -> `Await { d with k }
 
   let rec decode d =
     match H.M.decode d.h with
     | `Header (src_len, dst_len) ->
-      `Header (src_len, dst_len, { d with src_len; dst_len; })
-    | `End -> `End
+      `Header (src_len, dst_len, { d with src_len; dst_len; k= decode; })
+    | `End -> `End { d with k= decode }
     | `Malformed err -> `Malformed err
     | `Await ->
       inflate { d with z= Zz.M.flush d.z }
@@ -136,7 +146,7 @@ end = struct
     match Zz.M.decode d.z with
     | `Await z ->
       let dst_len = Dd.bigstring_length d.o - Zz.M.dst_rem z in
-      H.M.src d.h d.o 0 dst_len ; refill decode { d with z }
+      H.M.src d.h d.o 0 dst_len ; refill inflate { d with z }
     | `End z ->
       let dst_len = Dd.bigstring_length d.o - Zz.M.dst_rem z in
       H.M.src d.h d.o 0 dst_len ; decode { d with z }
@@ -154,6 +164,17 @@ end = struct
 
   let source d src =
     H.M.source d.h src ; d
+
+  let dst_len d =
+    let dst_len = H.M.dst_len d.h in
+    assert (d.dst_len = dst_len) ; dst_len
+
+  let src_len d =
+    let src_len = H.M.src_len d.h in
+    assert (d.src_len = src_len) ; src_len
+
+  let dst_rem d = H.M.dst_rem d.h
+  let src_rem d = Zz.M.src_rem d.z
 
   let decoder ?source ~o ~allocate src =
     let decoder_z = Zz.M.decoder `Manual ~o ~allocate in
@@ -175,10 +196,8 @@ end = struct
     ; i_len
     ; o
     ; z= decoder_z
-    ; h= decoder_h }
+    ; h= decoder_h
+    ; k= decode }
 
-  type decode = [ `Await of decoder
-                | `Header of (int * int * decoder)
-                | `End
-                | `Malformed of string ]
+  let decode d = d.k d
 end

@@ -111,6 +111,9 @@ module Verify (IO : IO) : sig
   type status
 
   val uid_of_status : status -> Uid.t
+  val kind_of_status : status -> [ `A | `B | `C | `D ]
+  val depth_of_status : status -> int
+  val source_of_status : status -> Uid.t option
 
   val unresolved_base : cursor:int -> status
   val unresolved_node : status

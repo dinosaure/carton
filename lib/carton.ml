@@ -115,7 +115,7 @@ let weight_of_delta
     let ( >>= ) = bind in
     let decoder = Zh.M.decoder ~o:t.tmp ~allocate:t.allocate `Manual in
     let rec go cursor decoder = match Zh.M.decode decoder with
-      | `End -> assert false (* XXX(dinosaure): [`End] never appears before [`Header]. *)
+      | `End _ -> assert false (* XXX(dinosaure): [`End] never appears before [`Header]. *)
       | `Malformed err -> failwith err
       | `Header (src_len, dst_len, _) -> return (max weight (max src_len dst_len))
       | `Await decoder ->
@@ -359,17 +359,17 @@ let of_delta
   = fun ({ bind; return; } as s) ~map t kind raw ~cursor slice ->
     let ( >>= ) = bind in
 
-    let l = ref 0 in
     let decoder = Zh.M.decoder ~o:t.tmp ~allocate:t.allocate `Manual in
 
     let rec go cursor decoder = match Zh.M.decode decoder with
-      | `End -> return { kind; raw; len= !l; }
+      | `End decoder ->
+        let len = Zh.M.dst_len decoder in
+        return { kind; raw; len; }
       | `Malformed err -> failwith err
       | `Header (src_len, dst_len, decoder) ->
         let source = get_source raw in
         let payload = get_payload raw in
 
-        l := dst_len ;
         assert (bigstring_length source >= src_len) ;
         assert (bigstring_length payload >= dst_len) ;
 
@@ -619,7 +619,7 @@ let uid_of_offset_with_source
 type node =
   | Node of int * Uid.t * node list
   | Leaf of int * Uid.t
-and tree = Base of int * Uid.t * node list
+and tree = Base of [ `A | `B | `C | `D ] * int * Uid.t * node list
 
 type children = cursor:int -> uid:Uid.t -> int list
 type where = cursor:int -> int
@@ -665,12 +665,26 @@ module Verify (IO : IO) = struct
   type status =
     | Unresolved_base of int
     | Unresolved_node
-    | Resolved_base of Uid.t
-    | Resolved_node of Uid.t
+    | Resolved_base of Uid.t * [ `A | `B | `C | `D ]
+    | Resolved_node of Uid.t * [ `A | `B | `C | `D ] * int * Uid.t
 
   let uid_of_status = function
-    | Resolved_node uid | Resolved_base uid -> uid
+    | Resolved_node (uid, _, _, _) | Resolved_base (uid, _) -> uid
     | _ -> Fmt.invalid_arg "Current status is not resolved"
+
+  let kind_of_status = function
+    | Resolved_base (_, kind) | Resolved_node (_, kind, _, _) -> kind
+    | _ -> Fmt.invalid_arg "Current status is not resolved"
+
+  let depth_of_status = function
+    | Resolved_base _ | Unresolved_base _ -> 0
+    | Resolved_node (_, _, depth, _) -> depth
+    | Unresolved_node -> Fmt.invalid_arg "Current status is not resolved"
+
+  let source_of_status = function
+    | Resolved_base _ | Unresolved_base _ -> None
+    | Resolved_node (_, _, _, source) -> Some source
+    | Unresolved_node -> Fmt.invalid_arg "Current status is not resolved"
 
   let rec nodes_of_offsets
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> kind:[ `A | `B | `C | `D ] -> raw -> cursors:int list -> node list IO.t
@@ -721,22 +735,22 @@ module Verify (IO : IO) = struct
       let raw = make_raw ~weight in (* allocation *)
       uid_of_offset s ~map ~digest:oracle.digest t raw ~cursor |> Scheduler.prj >>= fun (kind, uid) ->
       match oracle.children ~cursor ~uid with
-      | [] -> IO.return (Base (cursor, uid, []))
+      | [] -> IO.return (Base (kind, cursor, uid, []))
       | cursors ->
         nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~cursors >>= fun nodes ->
-        IO.return (Base (cursor, uid, nodes))
+        IO.return (Base (kind, cursor, uid, nodes))
 
   let update
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> cursor:int -> matrix:status array -> unit IO.t
     = fun ~map ~oracle t ~cursor ~matrix ->
-      resolver ~map ~oracle t ~cursor >>= fun (Base (cursor, uid, children)) ->
-      matrix.(oracle.where ~cursor) <- Resolved_base uid ;
-      let rec go = function
+      resolver ~map ~oracle t ~cursor >>= fun (Base (kind, cursor, uid, children)) ->
+      matrix.(oracle.where ~cursor) <- Resolved_base (uid, kind) ;
+      let rec go depth source = function
         | Leaf (cursor, uid) ->
-          matrix.(oracle.where ~cursor) <- Resolved_node uid
+          matrix.(oracle.where ~cursor) <- Resolved_node (uid, kind, depth, source)
         | Node (cursor, uid, children) ->
-          matrix.(oracle.where ~cursor) <- Resolved_node uid ; List.iter go children in
-      List.iter go children ; IO.return ()
+          matrix.(oracle.where ~cursor) <- Resolved_node (uid, kind, depth, source) ; List.iter (go (succ depth) uid) children in
+      List.iter (go 1 uid) children ; IO.return ()
 
   type 'a m = { mutable v : 'a; m : IO.mutex }
 

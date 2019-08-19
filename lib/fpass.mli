@@ -7,7 +7,7 @@ type kind =
   | Ofs of { sub : int; source : int; target : int; }
   | Ref of { ptr : Uid.t; source : int; target : int; }
 
-type entry = { offset : int; kind : kind; size : int; }
+type entry = { offset : int; kind : kind; size : int; consumed : int; }
 
 type decoder
 
