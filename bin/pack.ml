@@ -1,4 +1,48 @@
-module Us = Carton.Make(struct type 'a t = 'a end)
+module Mutex = struct
+  type 'a fiber = 'a
+  type t = Mutex.t
+
+  let create () = Mutex.create ()
+  let lock t = Mutex.lock t
+  let unlock t = Mutex.unlock t
+  let with_lock t f = lock t ; let x = f () in unlock t ; x
+end
+
+module Future = struct
+  type 'a fiber = 'a
+  type 'a t = { th : Thread.t; v: 'a option ref }
+
+  let wait { th; v } = Thread.join th ; match !v with Some v -> v | None -> assert false
+  let peek { v; _ } = !v
+end
+
+module IO = struct
+  type 'a t = 'a
+
+  module Mutex = Mutex
+  module Future = Future
+
+  let bind x f = f x
+  let return x = x
+
+  let nfork_map l ~f = match l with
+    | [] -> []
+    | [ x ] ->
+      let v = ref None in
+      let th = Thread.create (fun () -> v := Some (f x)) () in
+      [ { Future.th; Future.v; } ]
+    | vs ->
+      let f x =
+        let v = ref None in
+        let th = Thread.create (fun () -> v := Some (f x)) () in
+        { Future.th; Future.v; } in
+      List.map f vs
+
+  let all_unit l = List.iter (fun x -> x) l
+end
+
+module Verify = Carton.Verify(IO)
+module Us = Verify.Scheduler
 
 let unix =
   { Carton.bind= (fun x f -> f (Us.prj x))
@@ -6,50 +50,13 @@ let unix =
 
 type fd = { fd : Unix.file_descr; mx : int; }
 
-let map : (fd, Us.t) Carton.W.map =
+let unix_map : (fd, Us.t) Carton.W.map =
   fun fd ~pos len ->
   let payload =
     let len = min (fd.mx - pos) len in
     Mmap.V1.map_file fd.fd ~pos:(Int64.of_int pos)
       Bigarray.char Bigarray.c_layout false [| len |] in
   Us.inj (Bigarray.array1_of_genarray payload)
-
-module IO : Carton.IO with type 'a t = 'a Lwt.t = struct
-  type 'a t = 'a Lwt.t
-  type 'a u = 'a Lwt.u
-
-  let bind = Lwt.bind
-  let return = Lwt.return
-
-  let list_iteri = Lwt_list.iteri_s
-
-  type mutex = Lwt_mutex.t
-
-  let mutex = Lwt_mutex.create
-  let mutex_lock = Lwt_mutex.lock
-  let mutex_unlock = Lwt_mutex.unlock
-
-  let wakeup = Lwt.wakeup
-  let async f = Lwt.async (fun () -> Lwt_preemptive.detach f ())
-  let task = Lwt.task
-  let join = Lwt.join
-end
-
-module Verify = Carton.Verify(IO)
-module Ls = Verify.Scheduler
-
-let lwt =
-  let open Lwt.Infix in
-  { Carton.bind= (fun x f -> Ls.inj (Ls.prj x >>= fun x -> Ls.prj (f x)))
-  ; Carton.return = (fun x -> Ls.inj (Lwt.return x)) }
-
-let lwt_map : (fd, Ls.t) Carton.W.map =
-  fun fd ~pos len ->
-  let payload =
-    let len = min (fd.mx - pos) len in
-    Mmap.V1.map_file fd.fd ~pos:(Int64.of_int pos)
-      Bigarray.char Bigarray.c_layout false [| len |] in
-  Ls.inj (Lwt.return (Bigarray.array1_of_genarray payload))
 
 let z = Dd.bigstring_create Dd.io_buffer_size
 let allocate bits = Dd.make_window ~bits
@@ -120,7 +127,7 @@ let verify t =
       let n = Carton.Fpass.count decoder - 1 in
       Hashtbl.add weight (offset - sub) source ;
       Hashtbl.add length offset size ;
-      Hashtbl.add weight offset target ;
+      Hashtbl.add weight offset target;
       Hashtbl.add carbon offset consumed ;
       Hashtbl.add where offset n ;
       ( try let v = Hashtbl.find children (`Ofs (offset - sub)) in Hashtbl.add children (`Ofs (offset - sub)) (offset :: v)
@@ -142,11 +149,11 @@ let verify t =
     ; weight= (fun ~cursor -> Hashtbl.find weight cursor) } in
 
   let matrix = !matrix in
-  let fiber = Verify.verify ~map:lwt_map ~oracle t ~matrix in
+  let fiber () = Verify.verify ~map:unix_map ~oracle t ~matrix in
 
-  Lwt_preemptive.init 2 4 ignore ;
   Fmt.epr "Start to verify!\n%!" ;
-  Lwt_main.run fiber ;
+  fiber () ;
+
   let offsets = Hashtbl.fold (fun k _ a -> k :: a) where [] |> List.sort (compare : int -> int -> int) |> Array.of_list in
   let matrix = zip offsets matrix in
   let pp_kind ppf = function
@@ -161,7 +168,7 @@ let verify t =
       let consumed = Hashtbl.find carbon offset in
       let prev = Verify.depth_of_status s, Verify.source_of_status s in
       Fmt.epr "%a %a %d %d %d%a\n%!"
-        Digestif.SHA1.pp uid pp_kind kind size consumed offset pp_prev prev) matrix
+        Digestif.SHA1.pp uid pp_kind kind (size :> int) consumed offset pp_prev prev) matrix
 
 let load t =
   let offset = int_of_string Sys.argv.(2) in
@@ -169,15 +176,15 @@ let load t =
   let fiber =
     let ( >>= ) = unix.bind in
     Carton.weight_of_offset
-      unix ~map t ~weight:Carton.null ~cursor:offset >>= fun weight ->
+      unix ~map:unix_map t ~weight:Carton.null ~cursor:offset >>= fun weight ->
     let raw = Carton.make_raw ~weight in
-    Carton.of_offset unix ~map t raw ~cursor:offset in
+    Carton.of_offset unix ~map:unix_map t raw ~cursor:offset in
   let v = Us.prj fiber in
   let hash = hash_of_v v in
 
   Fmt.pr "> %a.\n%!" Digestif.SHA1.pp hash ;
 
-  let fiber = Carton.path_of_offset unix ~map t ~cursor:offset in
+  let fiber = Carton.path_of_offset unix ~map:unix_map t ~cursor:offset in
   let path = Us.prj fiber in
 
   Fmt.pr "> @[<hov>%a@]\n%!" Carton.pp_path path ;
@@ -185,9 +192,9 @@ let load t =
   let fiber =
     let ( >>= ) = unix.bind in
     Carton.weight_of_offset
-      unix ~map t ~weight:Carton.null ~cursor:offset >>= fun weight ->
+      unix ~map:unix_map t ~weight:Carton.null ~cursor:offset >>= fun weight ->
     let raw = Carton.make_raw ~weight in
-    Carton.of_offset_with_path unix ~map t ~path raw ~cursor:offset in
+    Carton.of_offset_with_path unix ~map:unix_map t ~path raw ~cursor:offset in
   let v = Us.prj fiber in
   let hash = hash_of_v v in
 

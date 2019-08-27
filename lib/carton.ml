@@ -28,9 +28,331 @@ let bigstring_length : bigstring -> int = Bigstringaf.length
 let unsafe_get_uint8 : bigstring -> int -> int = fun v off -> Char.code (Bigstringaf.get v off)
 let unsafe_get_char : bigstring -> int -> char = Bigstringaf.get
 
-type checksum
+let input_bigstring ic buf off len =
+  let tmp = Bytes.create len in
+  let res = input ic tmp 0 len in
+  Bigstringaf.blit_from_bytes tmp ~src_off:0 buf ~dst_off:off ~len:res ; res
 
-module Fpass = Fpass
+module Uid = struct
+  type t = Digestif.SHA1.t
+  type ctx = Digestif.SHA1.ctx
+
+  let empty = Digestif.SHA1.empty
+  let get = Digestif.SHA1.get
+  let feed ctx ?off ?len buf = Digestif.SHA1.feed_bigstring ctx ?off ?len buf
+  let equal = Digestif.SHA1.equal
+  let length = Digestif.SHA1.digest_size
+  let of_raw_string : string -> t = Digestif.SHA1.of_raw_string
+  let pp = Digestif.SHA1.pp
+  let null = Digestif.SHA1.digest_string ""
+end
+
+type kind = [ `A | `B | `C | `D ]
+
+module Fpass = struct
+  type src = [ `Channel of in_channel | `String of string | `Manual ]
+
+  type nonrec kind =
+    | Base of kind
+    | Ofs of { sub : int; source : int; target : int; }
+    | Ref of { ptr : Uid.t; source : int; target : int; }
+
+  type decoder =
+    { src : src
+    ; i : bigstring
+    ; i_pos : int
+    ; i_len : int
+    ; n : int (* number of objects *)
+    ; c : int (* counter of objects *)
+    ; v : int (* version of PACK file *)
+    ; r : int (* how many bytes consumed *)
+    ; s : s
+    ; o : bigstring
+    ; t_tmp : bigstring
+    ; t_len : int
+    ; t_need : int
+    ; t_peek : int
+    ; ctx : Uid.ctx
+    ; z : Zz.M.decoder
+    ; k : decoder -> decode }
+  and s =
+    | Header | Entry | Inflate of entry | Hash
+  and decode =
+    [ `Await of decoder
+    | `Peek of decoder
+    | `Entry of (entry * decoder)
+    | `End
+    | `Malformed of string ]
+  and entry =
+    { offset : int; kind : kind; size : int; consumed : int; }
+
+  let with_source source entry = match entry.kind with
+    | Ofs { sub; target; _ } -> { entry with kind= Ofs { sub; source; target; }; }
+    | Ref { ptr; target; _ } -> { entry with kind= Ref { ptr; source; target; }; }
+    | _ -> entry
+
+  let source entry = match entry.kind with
+    | Ofs { source; _ } | Ref { source; _ } -> source
+    | _ -> assert false
+
+  let target entry = match entry.kind with
+    | Ofs { target; _ } | Ref { target; _ } -> target
+    | _ -> assert false
+
+  let with_target target entry = match entry.kind with
+    | Ofs { sub; source; _ } -> { entry with kind= Ofs { sub; source; target; }; }
+    | Ref { ptr; source; _ } -> { entry with kind= Ref { ptr; source; target; }; }
+    | _ -> entry
+
+  let i_rem d = d.i_len - d.i_pos + 1
+  let number { n; _ } = n
+  let version { v; _ } = v
+  let count { c; _ } = c
+
+  let is_inflate = function Inflate _ -> true | _ -> false
+
+  let eoi d = { d with i= Bigstringaf.empty
+                    ; i_pos= 0
+                    ; i_len= min_int }
+
+  let malformedf fmt = Fmt.kstrf (fun err -> `Malformed err) fmt
+
+  let src d s j l =
+    if (j < 0 || l < 0 || j + l > Bigstringaf.length s)
+    then Fmt.invalid_arg "Source out of bounds" ;
+    if (l == 0) then eoi d
+    else
+      let z = if is_inflate d.s then Zz.M.src d.z s j l else d.z in
+      { d with i= s
+            ; i_pos= j
+            ; i_len= j + l - 1
+            ; z }
+
+  let refill k d = match d.src with
+    | `String _ -> k (eoi d)
+    | `Channel ic ->
+      let res = input_bigstring ic d.i 0 (Bigstringaf.length d.i) in
+      k (src d d.i 0 res)
+    | `Manual -> `Await { d with k }
+
+  let rec peek k d = match d.src with
+    | `String _ -> malformedf "Unexpected end of input"
+    | `Channel ic ->
+      let rem = i_rem d in
+
+      if rem < d.t_peek
+      then
+        ( Bigstringaf.blit d.i ~src_off:d.i_pos d.i ~dst_off:0 ~len:rem ; (* compress *)
+          let res = input_bigstring ic d.i rem (Bigstringaf.length d.i - rem) in
+          peek k (src d d.i 0 (rem + res)) )
+      else k d
+    | `Manual ->
+      let rem = i_rem d in
+
+      if rem < d.t_peek
+      then ( Bigstringaf.blit d.i ~src_off:d.i_pos d.i ~dst_off:0 ~len:rem ; (* compress *)
+            `Peek { d with k= peek k; i_pos= 0; i_len= rem - 1; } )
+      else k d
+
+  let t_need d n = { d with t_need= n }
+  let t_peek d n = { d with t_peek= n }
+
+  let rec t_fill k d =
+    let blit d len =
+      Bigstringaf.blit d.i ~src_off:d.i_pos d.t_tmp ~dst_off:d.t_len ~len ;
+      { d with i_pos= d.i_pos + len; r= d.r + len
+            ; t_len= d.t_len + len } in
+    let rem = i_rem d in
+    if rem < 0 then malformedf "Unexpected end of input"
+    else
+      let need = d.t_need - d.t_len in
+      if rem < need
+      then let d = blit d rem in refill (t_fill k) d
+      else let d = blit d need in k { d with t_need= 0 }
+
+
+  let variable_length buf off top =
+    let p = ref off in
+    let i = ref 0 in
+    let len = ref 0 in
+
+    while ( let cmd = Char.code (Bigstringaf.get buf !p) in
+            incr p
+          ; len := !len lor ((cmd land 0x7f) lsl !i)
+          ; i := !i + 7
+          ; cmd land 0x80 != 0 && !p <= top )
+    do () done ; (!p - off, !len)
+
+  let rec decode d = match d.s with
+    | Header ->
+      let refill_12 k d =
+        if i_rem d >= 12
+        then k d.i d.i_pos { d with i_pos= d.i_pos + 12; r= d.r + 12 }
+        else t_fill (k d.t_tmp 0) (t_need d 12) in
+      let k buf off d =
+        let _ = Bigstringaf.get_int32_be buf off in
+        let v = Bigstringaf.get_int32_be buf (off + 4) |> Int32.to_int in
+        let n = Bigstringaf.get_int32_be buf (off + 8) |> Int32.to_int in
+        if d.c == n
+        then decode { d with v; n; s= Hash; k= decode; ctx= Uid.feed d.ctx buf ~off ~len:12 }
+        else decode { d with v; n; s= Entry; k= decode; ctx= Uid.feed d.ctx buf ~off ~len:12 } in
+      refill_12 k d
+    | Entry ->
+      let peek_10 k d = peek k (t_peek d 10) in
+      let k d =
+        let p = ref d.i_pos in
+        let c = ref (Char.code (Bigstringaf.get d.i !p)) in
+        incr p ;
+        let kind = (!c asr 4) land 7 in
+        let size = ref (!c land 15) in
+        let shft = ref 4 in
+
+        while !c land 0x80 != 0
+        do
+          c := Char.code (Bigstringaf.get d.i !p) ;
+          incr p ;
+          size := !size + ((!c land 0x7f) lsl !shft) ;
+          shft := !shft + 7 ;
+        done ;
+
+        match kind with
+        | 0b000 | 0b101 -> malformedf "Invalid type"
+        | 0b001 | 0b010 | 0b011 | 0b100 as kind ->
+          let z = Zz.M.reset d.z in
+          let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
+          let k = match kind with 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> assert false in
+          let e = { offset= d.r; kind= Base k; size= !size; consumed= 0; } in
+
+          decode { d with i_pos= !p; r= d.r + (!p - d.i_pos); c= succ d.c; z
+                        ; s= Inflate e; k= decode
+                        ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
+        | 0b110 ->
+          let offset = d.r in
+
+          let k d =
+            let p = ref d.i_pos in
+            let c = ref (Char.code (Bigstringaf.get d.i !p)) in
+            incr p ;
+            let base_offset = ref (!c land 127) in
+
+            while !c land 128 != 0
+            do
+              incr base_offset ;
+              c := Char.code (Bigstringaf.get d.i !p) ;
+              incr p ;
+              base_offset := (!base_offset lsl 7) + (!c land 127) ;
+            done ;
+
+            let z = Zz.M.reset d.z in
+            let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
+            let e = { offset; kind= Ofs { sub= !base_offset; source= (-1); target= (-1); }; size= !size; consumed= 0; } in
+
+            decode { d with i_pos= !p; r= d.r + (!p - d.i_pos); c= succ d.c; z
+                          ; s= Inflate e; k= decode
+                          ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) } in
+
+          peek_10 k { d with i_pos= !p; r= d.r + (!p - d.i_pos)
+                          ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
+        | _ -> assert false in
+      peek_10 k d
+    | Inflate ({ kind= Base _; _ } as entry) ->
+      let rec go z = match Zz.M.decode z with
+        | `Await z ->
+          let len = i_rem d - Zz.M.src_rem z in
+          refill decode { d with z; i_pos= d.i_pos + len; r= d.r + len
+                              ; s= Inflate entry
+                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
+        | `Flush z ->
+          go (Zz.M.flush z)
+        | `Malformed _ as err -> err
+        | `End z ->
+          let len = i_rem d - Zz.M.src_rem z in
+          let z = Zz.M.reset z in
+          let decoder = { d with i_pos= d.i_pos + len; r= d.r + len
+                              ; z; s= if d.c == d.n then Hash else Entry
+                              ; k= decode
+                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len } in
+          let entry = { entry with consumed= decoder.r - entry.offset } in
+          `Entry (entry, decoder) in
+      go d.z
+    | Inflate ({ kind= (Ofs _ | Ref _); _ } as entry) ->
+      let source = ref (source entry) in
+      let target = ref (target entry) in
+      let first = ref (!source = (-1) && !target = (-1)) in
+
+      let rec go z = match Zz.M.decode z with
+        | `Await z ->
+          let len = i_rem d - Zz.M.src_rem z in
+          let entry = with_source !source entry in
+          let entry = with_target !target entry in
+          refill decode { d with z; i_pos= d.i_pos + len; r= d.r + len
+                              ; s= Inflate entry
+                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
+        | `Flush z ->
+          if !first
+          then ( let len = Bigstringaf.length d.o - Zz.M.dst_rem z in
+                let x, src_len = variable_length d.o 0 len in
+                let _, dst_len = variable_length d.o x len in
+                source := src_len ; target := dst_len ; first := false ) ;
+
+          go (Zz.M.flush z)
+        | `Malformed _ as err -> err
+        | `End z ->
+          if !first
+          then ( let len = Bigstringaf.length d.o - Zz.M.dst_rem z in
+                let x, src_len = variable_length d.o 0 len in
+                let _, dst_len = variable_length d.o x len in
+                source := src_len ; target := dst_len ; first := false ) ;
+
+          let len = i_rem d - Zz.M.src_rem z in
+          let z = Zz.M.reset z in
+          let decoder = { d with i_pos= d.i_pos + len; r= d.r + len
+                              ; z; s= if d.c == d.n then Hash else Entry
+                              ; k= decode
+                              ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len } in
+          let entry = { entry with consumed= decoder.r - entry.offset } in
+          let entry = with_source !source entry in
+          let entry = with_target !target entry in
+          `Entry (entry, decoder) in
+      go d.z
+    | Hash ->
+      let refill_uid k d =
+        if i_rem d >= Uid.length
+        then k d.i d.i_pos { d with i_pos= d.i_pos + Uid.length; r= d.r + Uid.length }
+        else t_fill (k d.t_tmp 0) (t_need d Uid.length) in
+      let k buf off d =
+        let expect = Uid.of_raw_string (Bigstringaf.substring buf ~off ~len:Uid.length) in
+        let have = Uid.get d.ctx in
+
+        if Uid.equal expect have
+        then `End
+        else malformedf "Unexpected hash: %a <> %a"
+            Uid.pp expect Uid.pp have in
+      refill_uid k d
+
+  let decoder ~o ~allocate src =
+    let i, i_pos, i_len = match src with
+      | `Manual -> Bigstringaf.empty, 1, 0
+      | `String x -> Bigstringaf.of_string x ~off:0 ~len:(String.length x), 0, String.length x - 1
+      | `Channel _ -> Bigstringaf.create Zz.io_buffer_size, 1, 0 in
+    { src
+    ; i; i_pos; i_len
+    ; n= 0
+    ; c= 0
+    ; v= 0
+    ; r= 0
+    ; o
+    ; s= Header
+    ; t_tmp= Bigstringaf.create Uid.length
+    ; t_len= 0
+    ; t_need= 0
+    ; t_peek= 0
+    ; ctx= Uid.empty
+    ; z= Zz.M.decoder `Manual ~o ~allocate
+    ; k= decode }
+
+  let decode d = d.k d
+end
 
 module W = struct
   type 'fd t =
@@ -80,19 +402,9 @@ module W = struct
     with Found -> return !slice
 end
 
-module Uid = struct
-  type t = Digestif.SHA1.t
-
-  let length = Digestif.SHA1.digest_size
-  let of_raw_string : string -> t = Digestif.SHA1.of_raw_string
-  let pp = Digestif.SHA1.pp
-  let null = Digestif.SHA1.digest_string ""
-end
-
 type 'fd t =
   { ws : 'fd W.t
   ; fd : Uid.t -> int
-  ; cr : Uid.t -> checksum
   ; tmp : Zz.bigstring
   ; allocate : int -> Zz.window }
 
@@ -101,11 +413,14 @@ let make
   = fun fd ~z ~allocate where ->
     { ws= W.make fd
     ; fd= where
-    ; cr= (fun _ -> assert false)
     ; tmp= z
     ; allocate }
 
 type weight = int
+
+let weight_of_int_exn x =
+  if x < 0 then Fmt.invalid_arg "weight_of_int_exn"
+  else x
 
 let null = 0
 
@@ -292,7 +607,7 @@ type raw =
   ; flip : bool }
 
 type v =
-  { kind : [ `A | `B | `C | `D ]
+  { kind : kind
   ; raw  : raw
   ; len  : int }
 
@@ -315,7 +630,7 @@ let raw { raw; _ } = get_payload raw
 let len { len; _ } = len
 
 let uncompress
-  : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> [ `A | `B | `C | `D ] -> raw -> cursor:int -> W.slice -> (v, s) io
+  : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> kind -> raw -> cursor:int -> W.slice -> (v, s) io
   = fun ({ bind; return; } as s) ~map t kind raw ~cursor slice ->
     let ( >>= ) = bind in
 
@@ -355,7 +670,7 @@ let uncompress
     go (slice.W.offset + slice.W.length) decoder
 
 let of_delta
-  : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> [ `A | `B | `C | `D ] -> raw -> cursor:int -> W.slice -> (v, s) io
+  : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> kind -> raw -> cursor:int -> W.slice -> (v, s) io
   = fun ({ bind; return; } as s) ~map t kind raw ~cursor slice ->
     let ( >>= ) = bind in
 
@@ -504,7 +819,7 @@ let path_of_offset
     return { depth; path; }
 
 let of_offset_with_source
-  : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> [ `A | `B | `C | `D ] -> raw -> cursor:int -> (v, s) io
+  : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> kind -> raw -> cursor:int -> (v, s) io
   = fun ({ bind; _ } as s) ~map t kind raw ~cursor ->
     let ( >>= ) = bind in
     W.load s ~map t.ws cursor >>= function
@@ -564,10 +879,10 @@ let of_offset_with_path
       else (go[@tailcall]) (pred depth) (flip raw) in
     if path.depth > 1 then go (path.depth - 1) (flip raw) else return base
 
-type digest = kind:[ `A | `B | `C | `D ] -> ?off:int -> ?len:int -> bigstring -> Uid.t
+type digest = kind:kind -> ?off:int -> ?len:int -> bigstring -> Uid.t
 
 let uid_of_offset
-  : type fd s. s scheduler -> map:(fd, s) W.map -> digest:digest -> fd t -> raw -> cursor:int -> ([ `A | `B | `C | `D ] * Uid.t, s) io
+  : type fd s. s scheduler -> map:(fd, s) W.map -> digest:digest -> fd t -> raw -> cursor:int -> (kind * Uid.t, s) io
   = fun ({ bind; return; } as s) ~map ~digest t raw ~cursor ->
     let ( >>= ) = bind in
     W.load s ~map t.ws cursor >>= function
@@ -580,7 +895,7 @@ let uid_of_offset
       return (kind, digest ~kind ~len:v.len (get_payload raw))
 
 let uid_of_offset_with_source
-  : type fd s. s scheduler -> map:(fd, s) W.map -> digest:digest -> fd t -> kind:[ `A | `B | `C | `D ] -> raw -> cursor:int -> (Uid.t, s) io
+  : type fd s. s scheduler -> map:(fd, s) W.map -> digest:digest -> fd t -> kind:kind -> raw -> cursor:int -> (Uid.t, s) io
   = fun ({ bind; return; } as s) ~map ~digest t ~kind raw ~cursor ->
     let ( >>= ) = bind in
     W.load s ~map t.ws cursor >>= function
@@ -619,7 +934,7 @@ let uid_of_offset_with_source
 type node =
   | Node of int * Uid.t * node list
   | Leaf of int * Uid.t
-and tree = Base of [ `A | `B | `C | `D ] * int * Uid.t * node list
+and tree = Base of kind * int * Uid.t * node list
 
 type children = cursor:int -> uid:Uid.t -> int list
 type where = cursor:int -> int
@@ -630,26 +945,33 @@ type oracle =
   ; where : where
   ; weight : cursor:int -> int } (* TODO: hide it with [weight]. *)
 
+module type MUTEX = sig
+  type 'a fiber
+  type t
+
+  val create : unit -> t
+  val lock : t -> unit fiber
+  val unlock : t -> unit
+end
+
+module type FUTURE = sig
+  type 'a fiber
+  type 'a t
+
+  val wait : 'a t -> 'a fiber
+  val peek : 'a t -> 'a option
+end
+
 module type IO = sig
   type 'a t
 
+  module Future : FUTURE with type 'a fiber = 'a t
+  module Mutex : MUTEX with type 'a fiber = 'a t
+
   val bind : 'a t -> ('a -> 'b t) -> 'b t
   val return : 'a -> 'a t
-
-  val list_iteri : (int -> 'a -> unit t) -> 'a list -> unit t
-
-  type mutex
-
-  val mutex : unit -> mutex
-  val mutex_lock : mutex -> unit t
-  val mutex_unlock : mutex -> unit
-
-  type 'a u
-
-  val task : unit -> 'a t * 'a u
-  val async : (unit -> 'a t) -> unit
-  val join : unit t list -> unit t
-  val wakeup : 'a u -> 'a -> unit
+  val nfork_map : 'a list -> f:('a -> 'b t) -> 'b Future.t list t
+  val all_unit : unit t list -> unit t
 end
 
 module Verify (IO : IO) = struct
@@ -665,8 +987,8 @@ module Verify (IO : IO) = struct
   type status =
     | Unresolved_base of int
     | Unresolved_node
-    | Resolved_base of Uid.t * [ `A | `B | `C | `D ]
-    | Resolved_node of Uid.t * [ `A | `B | `C | `D ] * int * Uid.t
+    | Resolved_base of Uid.t * kind
+    | Resolved_node of Uid.t * kind * int * Uid.t
 
   let uid_of_status = function
     | Resolved_node (uid, _, _, _) | Resolved_base (uid, _) -> uid
@@ -687,7 +1009,7 @@ module Verify (IO : IO) = struct
     | Unresolved_node -> Fmt.invalid_arg "Current status is not resolved"
 
   let rec nodes_of_offsets
-    : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> kind:[ `A | `B | `C | `D ] -> raw -> cursors:int list -> node list IO.t
+    : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> kind:kind -> raw -> cursors:int list -> node list IO.t
     = fun ~map ~oracle t ~kind raw ~cursors ->
       match cursors with
       | [] -> invalid_arg "Expect at least one cursor"
@@ -703,16 +1025,18 @@ module Verify (IO : IO) = struct
         let source = Bigstringaf.copy ~off:0 ~len:(Bigstringaf.length source) source in (* allocation *)
         let res = Array.make (List.length cursors) (Leaf ((-1), Uid.null)) in
 
-        IO.list_iteri (fun i cursor ->
-            uid_of_offset_with_source s ~map ~digest:oracle.digest t ~kind raw ~cursor |> Scheduler.prj >>= fun uid ->
-            match oracle.children ~cursor ~uid with
-            | [] ->
-              res.(i) <- Leaf (cursor, uid) ; IO.return ()
-            | cursors ->
-              nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~cursors >>= fun nodes ->
-              Bigstringaf.blit source ~src_off:0 (get_source raw) ~dst_off:0 ~len:(Bigstringaf.length source) ;
-              res.(i) <- Node (cursor, uid, nodes) ; IO.return () )
-          cursors >>= fun () ->
+        let fibers =
+          List.mapi (fun i cursor ->
+              uid_of_offset_with_source s ~map ~digest:oracle.digest t ~kind raw ~cursor |> Scheduler.prj >>= fun uid ->
+              match oracle.children ~cursor ~uid with
+              | [] ->
+                res.(i) <- Leaf (cursor, uid) ; IO.return ()
+              | cursors ->
+                nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~cursors >>= fun nodes ->
+                Bigstringaf.blit source ~src_off:0 (get_source raw) ~dst_off:0 ~len:(Bigstringaf.length source) ;
+                res.(i) <- Node (cursor, uid, nodes) ; IO.return () )
+            cursors in
+        IO.all_unit fibers >>= fun () ->
         IO.return (Array.to_list res)
 
   let weight_of_tree
@@ -752,7 +1076,7 @@ module Verify (IO : IO) = struct
           matrix.(oracle.where ~cursor) <- Resolved_node (uid, kind, depth, source) ; List.iter (go (succ depth) uid) children in
       List.iter (go 1 uid) children ; IO.return ()
 
-  type 'a m = { mutable v : 'a; m : IO.mutex }
+  type 'a m = { mutable v : 'a; m : IO.Mutex.t }
 
   let is_not_unresolved_base = function
     | Unresolved_base _ -> false
@@ -765,12 +1089,12 @@ module Verify (IO : IO) = struct
     : type fd. thread:int -> map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> matrix:status array -> mutex:int m -> unit IO.t
     = fun ~thread:_ ~map ~oracle t ~matrix ~mutex ->
       let rec go () =
-        IO.mutex_lock mutex.m >>= fun () ->
+        IO.Mutex.lock mutex.m >>= fun () ->
         while mutex.v < Array.length matrix && is_not_unresolved_base matrix.(mutex.v)
         do mutex.v <- mutex.v + 1 done ;
         if mutex.v >= Array.length matrix
-        then ( IO.mutex_unlock mutex.m ; IO.return () )
-        else ( let root = mutex.v in mutex.v <- mutex.v + 1 ; IO.mutex_unlock mutex.m ;
+        then ( IO.Mutex.unlock mutex.m ; IO.return () )
+        else ( let root = mutex.v in mutex.v <- mutex.v + 1 ; IO.Mutex.unlock mutex.m ;
                let[@warning "-8"] Unresolved_base cursor = matrix.(root) in (* XXX(dinosaure): Oh god, save me! *)
                update ~map ~oracle t ~cursor ~matrix >>= fun () ->
                (go[@tailcall]) () ) in
@@ -781,7 +1105,7 @@ module Verify (IO : IO) = struct
   let verify
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:oracle -> fd t -> matrix:status array -> unit IO.t
     = fun ~map ~oracle t ~matrix ->
-      let mutex = { v= 0; m= IO.mutex () } in
+      let mutex = { v= 0; m= IO.Mutex.create () } in
       let t0 = t in
 
       let z1 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
@@ -800,6 +1124,12 @@ module Verify (IO : IO) = struct
       let w4 = t0.allocate 15 in
       let t4 = { t0 with ws= W.make t0.ws.W.fd; tmp= z4; allocate= (fun _ -> w4) } in
 
+      IO.nfork_map
+        ~f:(fun t -> dispatcher ~thread:0 ~map ~oracle t ~matrix ~mutex)
+        [ t1; t2; t3; t4; ]
+      >>= fun futures -> IO.all_unit (List.map IO.Future.wait futures)
+
+      (*
       let thread ~n ~u t () = dispatcher ~thread:n ~map ~oracle t ~matrix ~mutex >>= fun () -> IO.wakeup u () ; IO.return () in
       let th1, u1 = IO.task () in
       let th2, u2 = IO.task () in
@@ -812,4 +1142,5 @@ module Verify (IO : IO) = struct
       IO.async (thread ~n:4 ~u:u4 t4) ;
 
       IO.join [ th1; th2; th3; th4; ]
+      *)
 end
