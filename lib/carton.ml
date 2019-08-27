@@ -48,6 +48,7 @@ module Uid = struct
 end
 
 type kind = [ `A | `B | `C | `D ]
+let _max_depth = 60
 
 module Fpass = struct
   type src = [ `Channel of in_channel | `String of string | `Manual ]
@@ -814,7 +815,7 @@ let path_of_offset
   : type fd s. s scheduler -> map:(fd, s) W.map -> fd t -> cursor:int -> (path, s) io
   = fun ({ return; bind; } as s) ~map t ~cursor ->
     let ( >>= ) = bind in
-    let path = Array.make 50 0 in
+    let path = Array.make _max_depth 0 in
     fill_path_from_offset s ~map t ~depth:1 path ~cursor >>= fun depth ->
     return { depth; path; }
 
