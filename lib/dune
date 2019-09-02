@@ -1,3 +1,4 @@
 (library
- (name carton)
- (libraries duff digestif z.zz z.h bigstringaf fmt))
+ (name cd)
+ (public_name carton.cd)
+ (libraries digestif duff z.zz z.h bigstringaf fmt))

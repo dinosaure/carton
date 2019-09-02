@@ -1,3 +1,4 @@
 (executable
- (name pack)
- (libraries hxd.string carton mmap unix threads digestif.c checkseum.c))
+ (name carton)
+ (public_name carton)
+ (libraries cmdliner bos fpath rresult carton.cd mmap unix threads digestif.c checkseum.c hxd.string))
