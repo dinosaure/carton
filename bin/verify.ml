@@ -40,7 +40,7 @@ let first_pass ~digest fpath =
   let rec go decoder = match Fpass.decode decoder with
     | `Await _ | `Peek _ -> assert false
     | `Entry ({ Fpass.kind= Base _
-              ; offset; size; consumed; }, decoder) ->
+              ; offset; size; consumed; _ }, decoder) ->
       let n = Fpass.count decoder - 1 in
       Hashtbl.add weight offset size ;
       Hashtbl.add length offset size ;
@@ -49,7 +49,7 @@ let first_pass ~digest fpath =
       matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
       go decoder
     | `Entry ({ Fpass.kind= Ofs { sub; source; target; }
-              ; offset; size; consumed; }, decoder) ->
+              ; offset; size; consumed; _ }, decoder) ->
       let n = Fpass.count decoder - 1 in
       Hashtbl.add weight (offset - sub) source ;
       Hashtbl.add weight offset target ;
@@ -63,7 +63,7 @@ let first_pass ~digest fpath =
           Hashtbl.add children (`Ofs (offset - sub)) [ offset ] ) ;
       go decoder
     | `Entry _ -> assert false (* OBJ_REF *)
-    | `End -> close_in ic ; Ok ()
+    | `End _ -> close_in ic ; Ok ()
     | `Malformed _ as err -> Error err in
   match go decoder with
   | Error _ as err -> err

@@ -12,5 +12,6 @@ let of_raw_string = Digestif.SHA1.of_raw_string
 let to_raw_string = Digestif.SHA1.to_raw_string
 let of_hex = Digestif.SHA1.of_hex
 let to_hex = Digestif.SHA1.to_hex
+let compare = Digestif.SHA1.unsafe_compare
 
 let null = Digestif.SHA1.digest_string ""

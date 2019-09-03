@@ -58,6 +58,7 @@ type ('fd, 's) read = 'fd -> bytes -> off:int -> len:int -> (int, 's) io
 
 module Fpass (Uid : UID) = struct
   type src = [ `Channel of in_channel | `String of string | `Manual ]
+  type optint = Optint.t
 
   type nonrec kind =
     | Base of kind
@@ -88,10 +89,10 @@ module Fpass (Uid : UID) = struct
     [ `Await of decoder
     | `Peek of decoder
     | `Entry of (entry * decoder)
-    | `End
+    | `End of Uid.t
     | `Malformed of string ]
   and entry =
-    { offset : int; kind : kind; size : int; consumed : int; }
+    { offset : int; kind : kind; size : int; consumed : int; crc : optint; }
 
   let with_source source entry = match entry.kind with
     | Ofs { sub; target; _ } -> { entry with kind= Ofs { sub; source; target; }; }
@@ -229,7 +230,7 @@ module Fpass (Uid : UID) = struct
     | Entry ->
       let peek_10 k d = peek k (t_peek d 10) in
 
-      let k_ofs_header offset size d =
+      let k_ofs_header crc offset size d =
         let p = ref d.i_pos in
         let c = ref (Char.code (Bigstringaf.get d.i !p)) in
         incr p ;
@@ -245,7 +246,8 @@ module Fpass (Uid : UID) = struct
 
         let z = Zz.M.reset d.z in
         let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
-        let e = { offset; kind= Ofs { sub= !base_offset; source= (-1); target= (-1); }; size; consumed= 0; } in
+        let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) crc in
+        let e = { offset; kind= Ofs { sub= !base_offset; source= (-1); target= (-1); }; size; consumed= 0; crc; } in
 
         decode { d with i_pos= !p; r= d.r + (!p - d.i_pos); c= succ d.c; z
                       ; s= Inflate e; k= decode
@@ -273,40 +275,44 @@ module Fpass (Uid : UID) = struct
           let z = Zz.M.reset d.z in
           let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
           let k = match kind with 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> assert false in
-          let e = { offset= d.r; kind= Base k; size= !size; consumed= 0; } in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) Checkseum.Crc32.default in
+          let e = { offset= d.r; kind= Base k; size= !size; consumed= 0; crc; } in
 
           decode { d with i_pos= !p; r= d.r + (!p - d.i_pos); c= succ d.c; z
                         ; s= Inflate e; k= decode
                         ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
         | 0b110 ->
           let offset = d.r in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) Checkseum.Crc32.default in
 
-          peek_10 (k_ofs_header offset !size)
+          peek_10 (k_ofs_header crc offset !size)
             { d with i_pos= !p; r= d.r + (!p - d.i_pos)
                    ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
         | _ -> assert false in
       peek_10 k_header d
-    | Inflate ({ kind= Base _; _ } as entry) ->
+    | Inflate ({ kind= Base _; crc; _ } as entry) ->
       let rec go z = match Zz.M.decode z with
         | `Await z ->
           let len = i_rem d - Zz.M.src_rem z in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
           refill decode { d with z; i_pos= d.i_pos + len; r= d.r + len
-                              ; s= Inflate entry
+                              ; s= Inflate { entry with crc }
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
         | `Flush z ->
           go (Zz.M.flush z)
         | `Malformed _ as err -> err
         | `End z ->
           let len = i_rem d - Zz.M.src_rem z in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
           let z = Zz.M.reset z in
           let decoder = { d with i_pos= d.i_pos + len; r= d.r + len
                               ; z; s= if d.c == d.n then Hash else Entry
                               ; k= decode
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len } in
-          let entry = { entry with consumed= decoder.r - entry.offset } in
+          let entry = { entry with consumed= decoder.r - entry.offset; crc; } in
           `Entry (entry, decoder) in
       go d.z
-    | Inflate ({ kind= (Ofs _ | Ref _); _ } as entry) ->
+    | Inflate ({ kind= (Ofs _ | Ref _); crc; _ } as entry) ->
       let source = ref (source entry) in
       let target = ref (target entry) in
       let first = ref (!source = (-1) && !target = (-1)) in
@@ -314,10 +320,11 @@ module Fpass (Uid : UID) = struct
       let rec go z = match Zz.M.decode z with
         | `Await z ->
           let len = i_rem d - Zz.M.src_rem z in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
           let entry = with_source !source entry in
           let entry = with_target !target entry in
           refill decode { d with z; i_pos= d.i_pos + len; r= d.r + len
-                              ; s= Inflate entry
+                              ; s= Inflate { entry with crc }
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
         | `Flush z ->
           if !first
@@ -336,12 +343,13 @@ module Fpass (Uid : UID) = struct
                 source := src_len ; target := dst_len ; first := false ) ;
 
           let len = i_rem d - Zz.M.src_rem z in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
           let z = Zz.M.reset z in
           let decoder = { d with i_pos= d.i_pos + len; r= d.r + len
                               ; z; s= if d.c == d.n then Hash else Entry
                               ; k= decode
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len } in
-          let entry = { entry with consumed= decoder.r - entry.offset } in
+          let entry = { entry with crc; consumed= decoder.r - entry.offset } in
           let entry = with_source !source entry in
           let entry = with_target !target entry in
           `Entry (entry, decoder) in
@@ -356,7 +364,7 @@ module Fpass (Uid : UID) = struct
         let have = Uid.get d.ctx in
 
         if Uid.equal expect have
-        then `End
+        then `End have
         else malformedf "Unexpected hash: %a <> %a"
             Uid.pp expect Uid.pp have in
       refill_uid k d

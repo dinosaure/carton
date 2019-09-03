@@ -86,6 +86,8 @@ type version
 module Idx = Idx
 
 module Fpass (Uid : UID) : sig
+  type optint = Optint.t
+
   type kind =
     | Base of [ `A | `B | `C | `D ]
     | Ofs of { sub : int; source : weight; target : weight; }
@@ -95,7 +97,8 @@ module Fpass (Uid : UID) : sig
     { offset : int
     ; kind : kind
     ; size : weight
-    ; consumed : int }
+    ; consumed : int
+    ; crc : optint }
 
   val check_header : 's scheduler -> ('fd, 's) read -> 'fd -> (version * int, 's) io
 
@@ -107,7 +110,7 @@ module Fpass (Uid : UID) : sig
     [ `Await of decoder
     | `Peek of decoder
     | `Entry of (entry * decoder)
-    | `End
+    | `End of Uid.t
     | `Malformed of string ]
 
   val decoder : o:Bigstringaf.t -> allocate:(int -> Dd.window) -> src -> decoder

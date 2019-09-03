@@ -14,7 +14,10 @@ let digest ~kind ?(off= 0) ?len buf =
 
 open Cmdliner
 
-let cmds = [ Verify.cmd ~digest; Get.cmd ~digest; Stat.cmd ~digest ]
+let cmds = [ Verify.cmd ~digest
+           ; Get.cmd ~digest
+           ; Stat.cmd ~digest
+           ; Index.cmd ~digest ]
 let main = `Help (`Pager, None)
 
 let cmd =
