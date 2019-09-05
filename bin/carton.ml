@@ -17,7 +17,8 @@ open Cmdliner
 let cmds = [ Verify.cmd ~digest
            ; Get.cmd ~digest
            ; Stat.cmd ~digest
-           ; Index.cmd ~digest ]
+           ; Index.cmd ~digest
+           ; Unpack.cmd ~digest ]
 let main = `Help (`Pager, None)
 
 let cmd =

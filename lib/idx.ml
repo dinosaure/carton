@@ -75,8 +75,8 @@ let compare_bigstring idx a hash =
       !c1 == !c2
     do ps := !ps + 2 ; if !ps == idx.uid_ln then raise_notrace Equal done ;
 
-    let res0 = !c1 - !c2 in
-    let res1 = res0 asr 8 in
+    let res0 = (!c1 land 0xff) - (!c2 land 0xff) in
+    let res1 = (!c1 asr 8) - (!c2 asr 8) in
     if res1 == 0 then res0 else res1
   with Equal -> 0
 
@@ -101,7 +101,9 @@ let bsearch idx hash =
     else if cmp > 0
     then (go[@tailcall]) sub_off len
     else (go[@tailcall]) (sub_off + len) (sub_len - len) in
+  Fmt.epr "uid: %a.\n%!" Digestif.SHA1.pp (Obj.magic hash) ;
   let { off; _ } = go abs_off len in
+  Fmt.epr "off: %d.\n%!" off ;
   Int32.to_int a + (off - abs_off) / idx.uid_ln
 
 let isearch idx hash =
@@ -110,15 +112,17 @@ let isearch idx hash =
   let b = get_int32_be idx.mp (fanout_offset + 4 * n) in
 
   let abs_off = hashes_offset + Int32.to_int a * idx.uid_ln in
-  let len = Int32.to_int (b <-> a) * idx.uid_ln in
+  let len = Int32.to_int (b <-> a <-> 1l) * idx.uid_ln in
 
   let hashf = Int64.to_float (string_get_int64_be hash 0) in
   let uid_lnf = float_of_int idx.uid_ln in
 
   let rec go low high =
-    if low + idx.uid_ln == high || low == high
+    if low == high
     then ( let cmp = compare_bigstring idx { off= low; len= idx.uid_ln } hash in
-           if cmp == 0 then { off= low; len= idx.uid_ln } else raise_notrace Not_found )
+           if cmp == 0
+           then { off= low; len= idx.uid_ln }
+           else raise_notrace Not_found )
     else
       let lef = Int64.to_float (get_int64_be idx.mp low) in
       let hef = Int64.to_float (get_int64_be idx.mp high) in
@@ -132,8 +136,10 @@ let isearch idx hash =
 
       if cmp == 0 then { off; len= idx.uid_ln }
       else if cmp > 0
-      then (go[@tailcall]) low off
+      then (go[@tailcall]) low (off - idx.uid_ln)
       else (go[@tailcall]) (off + idx.uid_ln) high in
+  if len < 0 then raise_notrace Not_found ;
+
   let { off; _ } = go abs_off (abs_off + len) in
   Int32.to_int a + (off - abs_off) / idx.uid_ln
 
@@ -152,7 +158,7 @@ let find idx hash =
     Fmt.epr "%a not found.\n%!" Digestif.SHA1.pp (Obj.magic hash) ;
     None
 
-let get_hash idx n =
+let get_uid idx n =
   let res = Bytes.create idx.uid_ln in
   Bigstringaf.blit_to_bytes idx.mp ~src_off:(hashes_offset + (n * idx.uid_ln)) res ~dst_off:0 ~len:idx.uid_ln ;
   idx.uid_wr (Bytes.unsafe_to_string res)
@@ -165,14 +171,16 @@ let get_crc idx n =
   let crcs_offset = 8 + (256 * 4) + (idx.n * idx.uid_ln) in
   Optint.of_int32 (get_int32_be idx.mp (crcs_offset + (n * 4)))
 
+let max { n; _ } = n
+
 let iter ~f idx =
   let rec go n =
     if n == idx.n then ()
     else
-      let hash = get_hash idx n in
+      let uid = get_uid idx n in
       let offset = get_offset idx n in
       let crc = get_crc idx n in
-      f ~hash ~offset ~crc ; go (succ n) in
+      f ~uid ~offset ~crc ; go (succ n) in
   go 0
 
 module type UID = sig

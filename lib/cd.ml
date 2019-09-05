@@ -43,6 +43,7 @@ module type UID = sig
   val feed : ctx -> ?off:int -> ?len:int -> bigstring -> ctx
 
   val equal : t -> t -> bool
+  val compare : t -> t -> int
   val length : int
   val of_raw_string : string -> t
   val pp : t Fmt.t
@@ -396,7 +397,7 @@ end
 module W = struct
   type 'fd t =
     { mutable cur : int
-    ; w : slice option array
+    ; w : slice Weak.t
     ; m : int
     ; fd : 'fd }
   and slice = { offset : int
@@ -406,8 +407,8 @@ module W = struct
 
   let make fd =
     { cur= 0
-    ; w= Array.make 0xf None
-    ; m= 0xf
+    ; w= Weak.create (0xffff + 1)
+    ; m= 0xffff
     ; fd }
 
   (* XXX(dinosaure): memoization. *)
@@ -422,7 +423,7 @@ module W = struct
       let slice = Some { offset= (w / 1024 * 1024)
                        ; length= bigstring_length payload
                        ; payload; } in
-      t.w.(t.cur land 7) <- slice ;
+      Weak.set t.w (t.cur land 0xffff) slice ;
       t.cur <- t.cur + 1 ; return slice
 
   let load
@@ -431,7 +432,8 @@ module W = struct
     let exception Found in
     let slice = ref None in
     try
-      Array.iter (function
+      for i = 0 to Weak.length t.w - 1
+      do match Weak.get t.w i with
           | Some ({ offset; length; _ } as s) ->
             if w >= offset && w < offset + length && length - (w - offset) >= 20
             (* XXX(dinosaure): when we want to load a new window, we need to see
@@ -439,9 +441,8 @@ module W = struct
                end of the window. Otherwise, we can return a window with 0 bytes
                available according the given offset. *)
             then ( slice := Some s ; raise_notrace Found )
-          | None -> () )
-        t.w ;
-      heavy_load s ~map t w
+          | None -> ()
+      done ; heavy_load s ~map t w
     with Found -> return !slice
 end
 
@@ -452,6 +453,10 @@ type ('fd, 'uid) t =
   ; uid_rw : string -> 'uid
   ; tmp : Zz.bigstring
   ; allocate : int -> Zz.window }
+
+let with_z tmp t = { t with tmp }
+let with_w ws t = { t with ws }
+let with_allocate ~allocate t = { t with allocate }
 
 let make
   : type fd uid. fd -> z:Zz.bigstring -> allocate:(int -> Zz.window) -> uid_ln:int -> uid_rw:(string -> uid) -> (uid -> int) -> (fd, uid) t
@@ -665,6 +670,9 @@ let make_raw ~weight =
   ; raw1= Bigstringaf.sub raw ~off:weight ~len:weight
   ; flip= false }
 
+let weight_of_raw { raw0; _ } =
+  bigstring_length raw0
+
 let get_payload { raw0; raw1; flip; } =
   if flip then raw0 else raw1
 
@@ -689,8 +697,7 @@ let uncompress
       | `Malformed err -> failwith err
       | `End decoder ->
         let len = bigstring_length o - Zz.M.dst_rem decoder in
-        assert (len = 0) ;
-        assert (!p) ;
+        assert (!p || (not !p && len = 0)) ;
         (* XXX(dinosaure): we gave a [o] buffer which is enough to store
            inflated data. At the end, [decoder] should not return more than one
            [`Flush]. *)
@@ -1010,11 +1017,23 @@ module type FUTURE = sig
   val peek : 'a t -> 'a option
 end
 
+module type CONDITION = sig
+  type 'a fiber
+  type mutex
+  type t
+
+  val create : unit -> t
+  val wait : t -> mutex -> unit fiber
+  val signal : t -> unit
+  val broadcast : t -> unit
+end
+
 module type IO = sig
   type 'a t
 
   module Future : FUTURE with type 'a fiber = 'a t
   module Mutex : MUTEX with type 'a fiber = 'a t
+  module Condition : CONDITION with type 'a fiber = 'a t and type mutex = Mutex.t
 
   val bind : 'a t -> ('a -> 'b t) -> 'b t
   val return : 'a -> 'a t
@@ -1147,29 +1166,88 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
       go ()
 
   let verify
-    : type fd. map:(fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> (fd, Uid.t) t -> matrix:status array -> unit IO.t
-    = fun ~map ~oracle t ~matrix ->
+    : type fd. threads:int -> map:(fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> (fd, Uid.t) t -> matrix:status array -> unit IO.t
+    = fun ~threads ~map ~oracle t ~matrix ->
       let mutex = { v= 0; m= IO.Mutex.create () } in
       let t0 = t in
 
-      let z1 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
-      let w1 = t0.allocate 15 in
-      let t1 = { t0 with ws= W.make t0.ws.W.fd; tmp= z1; allocate= (fun _ -> w1) } in
-
-      let z2 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
-      let w2 = t0.allocate 15 in
-      let t2 = { t0 with ws= W.make t0.ws.W.fd; tmp= z2; allocate= (fun _ -> w2) } in
-
-      let z3 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
-      let w3 = t0.allocate 15 in
-      let t3 = { t0 with ws= W.make t0.ws.W.fd; tmp= z3; allocate= (fun _ -> w3) } in
-
-      let z4 = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
-      let w4 = t0.allocate 15 in
-      let t4 = { t0 with ws= W.make t0.ws.W.fd; tmp= z4; allocate= (fun _ -> w4) } in
-
       IO.nfork_map
         ~f:(fun t -> dispatcher ~map ~oracle t ~matrix ~mutex)
-        [ t1; t2; t3; t4; ]
+        (List.init threads (fun _ ->
+             let z = Bigstringaf.copy t0.tmp ~off:0 ~len:(Bigstringaf.length t0.tmp) in
+             let w = t0.allocate 15 in
+             { t0 with ws= W.make t0.ws.W.fd; tmp= z; allocate= (fun _ -> w) }))
       >>= fun futures -> IO.all_unit (List.map IO.Future.wait futures)
+end
+
+module Ip (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID) = struct
+  type optint = Idx.optint
+
+  let ( >>= ) = IO.bind
+  let return = IO.return
+
+  module K = struct
+    type t = Uid.t
+    let compare = Uid.compare
+  end
+  module V = struct
+    type t = int * optint
+    let compare (a, _) (b, _) =
+      (compare : int -> int -> int) a b
+  end
+  module Q = Psq.Make(K)(V)
+
+  let consumer ~f ~q ~finish ~signal ~mutex =
+    let rec go () =
+      IO.Mutex.lock mutex >>= fun () ->
+      let rec wait () =
+        if Q.is_empty q.contents && not !finish
+        then IO.Condition.wait signal mutex >>= wait
+        else return () in
+      wait () >>= fun () -> match Q.pop q.contents with
+      | Some ((uid, (offset, crc)), q') ->
+        q := q' ; IO.Mutex.unlock mutex ; f ~uid ~offset ~crc >>= go
+      | None -> assert (!finish) ; IO.Mutex.unlock mutex ; return () in
+    go ()
+
+  let producer ~idx ~q ~finish ~signal ~mutex =
+    let p = ref 0 in
+
+    let rec go () =
+      IO.Mutex.lock mutex >>= fun () ->
+      let v = !p in
+
+      if v >= Idx.max idx
+      then ( finish := true
+           ; IO.Condition.broadcast signal
+           ; IO.Mutex.unlock mutex
+           ; return () )
+      else
+        ( incr p ;
+          let uid = Idx.get_uid idx v
+          and offset = Idx.get_offset idx v
+          and crc = Idx.get_crc idx v in
+
+          q := Q.add uid (offset, crc) !q ;
+
+          IO.Condition.signal signal ; IO.Mutex.unlock mutex ; go () ) in
+    go ()
+
+  type 'a rdwr = Producer | Consumer of 'a
+
+  (* XXX(dinosaure): priority queue is needed to avoid fragmentation of [mmap]
+     and explosion of virtual memory. *)
+
+  let iter ~threads ~f idx =
+    let mutex = IO.Mutex.create () in
+    let signal = IO.Condition.create () in
+    let finish = ref false in
+    let q = ref Q.empty in
+
+    IO.nfork_map
+      ~f:(function
+          | Producer -> producer ~idx ~q ~finish ~signal ~mutex
+          | Consumer t -> consumer ~f:(f t) ~q ~finish ~signal ~mutex)
+      (Producer :: List.map (fun x -> Consumer x) threads)
+    >>= fun futures -> IO.all_unit (List.map IO.Future.wait futures)
 end

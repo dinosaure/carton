@@ -1,4 +1,5 @@
 open Prelude
+open Core
 
 module Fpass = Cd.Fpass(Uid)
 module Verify = Cd.Verify(Uid)(Us)(IO)
@@ -95,7 +96,7 @@ let print matrix (length : (int, Cd.weight) Hashtbl.t) carbon =
          pp_prev prev)
     matrix
 
-let verify ~digest verbose idx fpath =
+let verify ~digest threads verbose idx fpath =
   let open Rresult.R in
   first_pass ~digest fpath >>= fun (oracle, matrix, where, length, carbon) ->
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
@@ -105,7 +106,7 @@ let verify ~digest verbose idx fpath =
   let index _ = raise Not_found in
   let t = Cd.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 
-  Verify.verify ~map:unix_map ~oracle t ~matrix ;
+  Verify.verify ~threads ~map:unix_map ~oracle t ~matrix ;
 
   let offsets =
     Hashtbl.fold (fun k _ a -> k :: a) where []
@@ -125,7 +126,7 @@ let verify ~digest verbose idx fpath =
       matrix ; if verbose then print matrix length carbon ; Unix.close fd ; Ok ()
   with Invalid_pack -> Error `Invalid_pack
 
-let verify ~digest verbose fpath =
+let verify ~digest threads verbose fpath =
   let stat = Unix.stat (Fpath.to_string fpath) in
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mp = Mmap.V1.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
@@ -134,7 +135,7 @@ let verify ~digest verbose fpath =
 
   let fpath = Fpath.set_ext "pack" fpath in
 
-  let res = verify ~digest verbose idx fpath in Unix.close fd ; res
+  let res = verify ~digest threads verbose idx fpath in Unix.close fd ; res
 
 open Cmdliner
 
@@ -158,6 +159,20 @@ let idx =
   let doc = "The idx file to verify." in
   Arg.(required & pos 0 ~rev:true (some (existing_fpath ~ext:"idx")) None & info [] ~docv:"<pack>.idx" ~doc)
 
+let number ~default =
+  let parser x =
+    try let x = int_of_string x in if x <= 0 then Ok default else Ok x
+    with _ -> Rresult.R.error_msgf "Invalid number: %S" x in
+  let pp = Fmt.int in
+  Arg.conv (parser, pp)
+
+let threads =
+  let doc = "Specifies the number of threads to spawn when resolving deltas. \
+             This is meant to reduce packing time on multiprocessor machines. \
+             The required amount of memory for the delta search window is however \
+             multiplied by the number of threads." in
+    Arg.(value & opt (number ~default:cpu) cpu & info [ "threads" ] ~doc ~docv:"<n>")
+
 let verbose =
   let doc = "After verifying the pack, show list of objects contained in the pack." in
   Arg.(value & flag & info [ "v"; "verbose" ] ~doc)
@@ -169,5 +184,5 @@ let cmd ~digest =
     [ `S Manpage.s_description
     ; `P "Reads given idx file for packed archive created with carton \
           command and verifies idx file and the corresponding pack file." ] in
-  Term.(const (verify ~digest) $ verbose $ idx),
+  Term.(const (verify ~digest) $ threads $ verbose $ idx),
   Term.info "verify" ~doc ~exits ~man

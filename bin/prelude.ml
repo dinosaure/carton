@@ -16,6 +16,17 @@ module Future = struct
   let peek { v; _ } = !v
 end
 
+module Condition = struct
+  type 'a fiber = 'a
+  type mutex = Mutex.t
+  type t = Condition.t
+
+  let create () = Condition.create ()
+  let wait mutex t = Condition.wait mutex t
+  let signal t = Condition.signal t
+  let broadcast t = Condition.broadcast t
+end
+
 module Us = Cd.Make(struct type 'a t = 'a end)
 
 let unix =
@@ -42,6 +53,7 @@ module IO = struct
 
   module Mutex = Mutex
   module Future = Future
+  module Condition = Condition
 
   let bind x f = f x
   let return x = x

@@ -35,11 +35,23 @@ module type FUTURE = sig
   val peek : 'a t -> 'a option
 end
 
+module type CONDITION = sig
+  type 'a fiber
+  type mutex
+  type t
+
+  val create : unit -> t
+  val wait : t -> mutex -> unit fiber
+  val signal : t -> unit
+  val broadcast : t -> unit
+end
+
 module type IO = sig
   type 'a t
 
   module Future : FUTURE with type 'a fiber = 'a t
   module Mutex : MUTEX with type 'a fiber = 'a t
+  module Condition : CONDITION with type 'a fiber = 'a t and type mutex = Mutex.t
 
   val bind : 'a t -> ('a -> 'b t) -> 'b t
   val return : 'a -> 'a t
@@ -58,6 +70,8 @@ module W : sig
     ; length : int
     ; payload : bigstring }
   and ('fd, 's) map = 'fd -> pos:int -> int -> (bigstring, 's) io
+
+  val make : 'fd -> 'fd t
 end
 
 module type UID = sig
@@ -69,6 +83,7 @@ module type UID = sig
   val feed : ctx -> ?off:int -> ?len:int -> bigstring -> ctx
 
   val equal : t -> t -> bool
+  val compare : t -> t -> int
   val length : int
   val of_raw_string : string -> t
   val pp : t Fmt.t
@@ -124,10 +139,15 @@ end
 type ('fd, 'uid) t
 (** Type of state used to access to any objects into a [Carton] file. *)
 
+val with_z : bigstring -> ('fd, 'uid) t -> ('fd, 'uid) t
+val with_w : 'fd W.t -> ('fd, 'uid) t -> ('fd, 'uid) t
+val with_allocate : allocate:(int -> Dd.window) -> ('fd, 'uid) t -> ('fd, 'uid) t
+
 type raw
 (** Type of a [Carton] object as is into a [Carton] file. *)
 
 val make_raw : weight:weight -> raw
+val weight_of_raw : raw -> weight
 
 type v
 type kind = [ `A | `B | `C | `D ]
@@ -206,5 +226,9 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
   val unresolved_base : cursor:int -> status
   val unresolved_node : status
 
-  val verify : map:('fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> ('fd, Uid.t) t -> matrix:status array -> unit IO.t
+  val verify : threads:int -> map:('fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> ('fd, Uid.t) t -> matrix:status array -> unit IO.t
+end
+
+module Ip (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID): sig
+  val iter : threads:'a list -> f:('a -> uid:Uid.t -> offset:int -> crc:Idx.optint -> unit IO.t) -> Uid.t Idx.idx -> unit IO.t
 end
