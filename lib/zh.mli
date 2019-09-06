@@ -1,11 +1,13 @@
 module N : sig
-
   type encoder
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
   type ret = [ `Flush of encoder | `End ]
 
+  val dst_rem : encoder -> int
+  val dst : encoder -> Zz.bigstring -> int -> int -> encoder
+
   val encode : encoder -> ret
-  val encoder : i:Zz.bigstring -> q:Dd.B.t -> w:Zz.window -> dst_len:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
+  val encoder : i:Zz.bigstring -> q:Dd.B.t -> w:Zz.window -> source:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
 end
 
 module M : sig

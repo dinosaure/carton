@@ -12,8 +12,11 @@ module N : sig
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
   type ret = [ `Flush of encoder | `End ]
 
+  val dst_rem : encoder -> int
+  val dst : encoder -> Zz.bigstring -> int -> int -> encoder
+
   val encode : encoder -> ret
-  val encoder : i:Zz.bigstring -> q:Dd.B.t -> w:Zz.window -> dst_len:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
+  val encoder : i:Zz.bigstring -> q:Dd.B.t -> w:Zz.window -> source:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
 end = struct
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
@@ -74,7 +77,7 @@ end = struct
       | d ->
         H.N.dst e.h e.t 0 (Dd.bigstring_length e.t) ; go d
 
-  let encoder ~i ~q ~w ~dst_len src dst hunks =
+  let encoder ~i ~q ~w ~source src dst hunks =
     let o, o_pos, o_max = match dst with
       | `Manual -> Dd.bigstring_empty, 1, 0
       | `Buffer _
@@ -85,7 +88,13 @@ end = struct
     ; t= i
     ; d= hunks
     ; z= Zz.N.encoder `Manual `Manual ~q ~w ~level:4
-    ; h= H.N.encoder `Manual ~src_len:(Bigstringaf.length src) ~dst_len }
+    ; h= H.N.encoder `Manual ~dst_len:(Bigstringaf.length src) ~src_len:source }
+
+  let dst_rem e = Zz.N.dst_rem e.z
+
+  let dst e s j l =
+    let z = Zz.N.dst e.z s j l in
+    { e with z }
 end
 
 module M : sig

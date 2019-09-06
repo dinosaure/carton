@@ -1,8 +1,8 @@
 open Prelude
 open Core
 
-module Fpass = Cd.Fpass(Uid)
-module Verify = Cd.Verify(Uid)(Us)(IO)
+module Fp = Clib.Dec.Fp(Uid)
+module Verify = Clib.Dec.Verify(Uid)(Us)(IO)
 
 let z = Dd.bigstring_create Dd.io_buffer_size
 let allocate bits = Dd.make_window ~bits
@@ -26,10 +26,10 @@ let first_pass ~digest fpath =
   let zw = Dd.make_window ~bits:15 in
   let allocate _ = zw in
 
-  let (_, max) = Us.prj (Fpass.check_header unix unix_read ic) in
+  let max = Us.prj (Fp.check_header unix unix_read ic) in
   seek_in ic 0 ;
 
-  let decoder = Fpass.decoder ~o:z ~allocate (`Channel ic) in
+  let decoder = Fp.decoder ~o:z ~allocate (`Channel ic) in
 
   let children = Hashtbl.create 0x100 in
   let where = Hashtbl.create max in
@@ -38,20 +38,20 @@ let first_pass ~digest fpath =
   let carbon = Hashtbl.create max in
   let matrix = Array.make max Verify.unresolved_node in
 
-  let rec go decoder = match Fpass.decode decoder with
+  let rec go decoder = match Fp.decode decoder with
     | `Await _ | `Peek _ -> assert false
-    | `Entry ({ Fpass.kind= Base _
+    | `Entry ({ Fp.kind= Base _
               ; offset; size; consumed; _ }, decoder) ->
-      let n = Fpass.count decoder - 1 in
+      let n = Fp.count decoder - 1 in
       Hashtbl.add weight offset size ;
       Hashtbl.add length offset size ;
       Hashtbl.add carbon offset consumed ;
       Hashtbl.add where offset n ;
       matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
       go decoder
-    | `Entry ({ Fpass.kind= Ofs { sub; source; target; }
+    | `Entry ({ Fp.kind= Ofs { sub; source; target; }
               ; offset; size; consumed; _ }, decoder) ->
-      let n = Fpass.count decoder - 1 in
+      let n = Fp.count decoder - 1 in
       Hashtbl.add weight (offset - sub) source ;
       Hashtbl.add weight offset target ;
       Hashtbl.add length offset size ;
@@ -69,7 +69,7 @@ let first_pass ~digest fpath =
   match go decoder with
   | Error _ as err -> err
   | Ok () ->
-    Ok ({ Cd.where= (fun ~cursor -> Hashtbl.find where cursor)
+    Ok ({ Clib.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
         ; children= (fun ~cursor ~uid ->
               match Hashtbl.find_opt children (`Ofs cursor),
                     Hashtbl.find_opt children (`Ref uid) with
@@ -82,7 +82,7 @@ let first_pass ~digest fpath =
 
 exception Invalid_pack
 
-let print matrix (length : (int, Cd.weight) Hashtbl.t) carbon =
+let print matrix (length : (int, Clib.Dec.weight) Hashtbl.t) carbon =
   Array.iter
     (fun (offset, s) ->
        let uid = Verify.uid_of_status s in
@@ -104,7 +104,7 @@ let verify ~digest threads verbose idx fpath =
     let ic = Unix.in_channel_of_descr fd in
     in_channel_length ic in
   let index _ = raise Not_found in
-  let t = Cd.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
+  let t = Clib.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 
   Verify.verify ~threads ~map:unix_map ~oracle t ~matrix ;
 
@@ -119,7 +119,7 @@ let verify ~digest threads verbose idx fpath =
       (fun (offset, s) ->
          let uid = Verify.uid_of_status s in
 
-         match Cd.Idx.find idx uid with
+         match Clib.Dec.Idx.find idx uid with
          | Some (_, offset') ->
            if offset != offset' then raise Invalid_pack ;
          | None -> raise Invalid_pack)
@@ -131,7 +131,7 @@ let verify ~digest threads verbose fpath =
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mp = Mmap.V1.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
   let mp = Bigarray.array1_of_genarray mp in
-  let idx = Cd.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+  let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
 
   let fpath = Fpath.set_ext "pack" fpath in
 

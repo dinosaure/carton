@@ -27,15 +27,15 @@ module Condition = struct
   let broadcast t = Condition.broadcast t
 end
 
-module Us = Cd.Make(struct type 'a t = 'a end)
+module Us = Clib.Make(struct type 'a t = 'a end)
 
 let unix =
-  { Cd.bind= (fun x f -> f (Us.prj x))
-  ; Cd.return= (fun x -> Us.inj x) }
+  { Clib.bind= (fun x f -> f (Us.prj x))
+  ; Clib.return= (fun x -> Us.inj x) }
 
 type fd = { fd : Unix.file_descr; mx : int; }
 
-let unix_map : (fd, Us.t) Cd.W.map =
+let unix_map : (fd, Us.t) Clib.Dec.W.map =
   fun fd ~pos len ->
   let payload =
     let len = min (fd.mx - pos) len in
@@ -43,7 +43,7 @@ let unix_map : (fd, Us.t) Cd.W.map =
       Bigarray.char Bigarray.c_layout false [| len |] in
   Us.inj (Bigarray.array1_of_genarray payload)
 
-let unix_read : (in_channel, Us.t) Cd.read =
+let unix_read : (in_channel, Us.t) Clib.Dec.read =
   fun fd buf ~off ~len ->
   let n = input fd buf off len in
   Us.inj n

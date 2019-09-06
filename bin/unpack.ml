@@ -6,14 +6,18 @@ let allocate bits = Dd.make_window ~bits
 
 module Cache : sig
   type t
-  type raw = Cd.raw
+  type raw = Clib.Dec.raw
 
   val create : capacity:int -> t
-  val malloc : weight:Cd.weight -> t -> raw
+  val malloc : weight:Clib.Dec.weight -> t -> raw
   val free : raw -> t -> unit
 end = struct
-  type t = { contents : Cd.raw Weak.t; mutex : Mutex.t; mutable idx : int; }
-  and raw = Cd.raw
+  type t =
+    { contents : Clib.Dec.raw Weak.t
+    ; mutex : Mutex.t
+    ; mask : int
+    ; mutable idx : int; }
+  and raw = Clib.Dec.raw
 
   let (//) x y =
     if y < 0 then raise Division_by_zero
@@ -25,14 +29,19 @@ end = struct
   let with_lock ~f mutex =
     Mutex.lock mutex ; f () ; Mutex.unlock mutex
 
-  let create ~capacity:_ =
+  let[@inline always] is_power_of_two v = v <> 0 && v land (lnot v + 1) = v
+
+  let create ~capacity =
+    if not (is_power_of_two capacity) then Fmt.invalid_arg "Cache.create" ;
+
     let mutex = Mutex.create () in
-    { contents= Weak.create (0xff + 1)
+    { contents= Weak.create capacity
     ; mutex
+    ; mask = capacity - 1
     ; idx= 0 }
 
-  let malloc ~(weight:Cd.weight) t =
-    let weight = Cd.weight_of_int_exn (round_of_pagesize (weight :> int)) in
+  let malloc ~(weight:Clib.Dec.weight) t =
+    let weight = Clib.Dec.weight_of_int_exn (round_of_pagesize (weight :> int)) in
     let res = ref None in
     let exception Found in
 
@@ -41,17 +50,17 @@ end = struct
         for i = 0 to Weak.length t.contents - 1 do
           match Weak.get t.contents i with
           | Some raw as v ->
-            let weight' = Cd.weight_of_raw raw in
+            let weight' = Clib.Dec.weight_of_raw raw in
             if weight <= weight' then ( res := v ; Weak.set t.contents i None ; raise_notrace Found )
           | None -> ()
         done ;
-        let raw = Cd.make_raw ~weight in res := Some raw
+        let raw = Clib.Dec.make_raw ~weight in res := Some raw
       with Found -> () in
     with_lock ~f t.mutex ; let[@warning "-8"] Some v = !res in v
 
   let free raw t =
     let f () =
-      Weak.set t.contents (t.idx land 0xff) (Some raw) ; t.idx <- t.idx + 1 in
+      Weak.set t.contents (t.idx land t.mask) (Some raw) ; t.idx <- t.idx + 1 in
     with_lock ~f t.mutex
 end
 
@@ -84,7 +93,7 @@ let path fformat v =
 
 exception Not_found of Uid.t
 
-module Ip = Cd.Ip(Us)(IO)(Uid)
+module Ip = Clib.Dec.Ip(Us)(IO)(Uid)
 
 type nonsense = |
 
@@ -92,23 +101,23 @@ let unpack_with_idx ~digest:_ threads fformat lru idx fpath =
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mx = let ic = Unix.in_channel_of_descr fd in in_channel_length ic in
   let pack =
-    Cd.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
-      (fun uid -> match Cd.Idx.find idx uid with
+    Clib.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
+      (fun uid -> match Clib.Dec.Idx.find idx uid with
          | Some (_, offset) -> offset
          | None -> raise (Not_found uid)) in
 
   let f pack ~uid:uid ~offset:_ ~crc:_ =
     let fiber () =
-      let ( >>= ) = unix.Cd.bind in
-      let return = unix.Cd.return in
+      let ( >>= ) = unix.Clib.bind in
+      let return = unix.Clib.return in
 
-      Cd.weight_of_uid unix ~map:unix_map pack ~weight:Cd.null uid >>= fun weight ->
+      Clib.Dec.weight_of_uid unix ~map:unix_map pack ~weight:Clib.Dec.null uid >>= fun weight ->
       let raw = Cache.malloc ~weight lru in
-      assert (Cd.weight_of_raw raw >= weight) ;
-      Cd.of_uid unix ~map:unix_map pack raw uid >>= fun v ->
-      let kind = Cd.kind v in
-      let payload = Cd.raw v in
-      let len = Cd.len v in
+      assert (Clib.Dec.weight_of_raw raw >= weight) ;
+      Clib.Dec.of_uid unix ~map:unix_map pack raw uid >>= fun v ->
+      let kind = Clib.Dec.kind v in
+      let payload = Clib.Dec.raw v in
+      let len = Clib.Dec.len v in
       let fpath = path fformat (kind, uid) in
 
       let fiber : ((unit, nonsense) result, Rresult.R.msg) result =
@@ -129,12 +138,12 @@ let unpack_with_idx ~digest:_ threads fformat lru idx fpath =
         let z = Bigstringaf.copy z ~off:0 ~len:(Bigstringaf.length z) in
         let w = allocate 15 in
 
-        Cd.with_w (Cd.W.make { fd; mx; }) t0
-        |> Cd.with_z z
-        |> Cd.with_allocate ~allocate:(fun _ -> w)) in
+        Clib.Dec.with_w (Clib.Dec.W.make { fd; mx; }) t0
+        |> Clib.Dec.with_z z
+        |> Clib.Dec.with_allocate ~allocate:(fun _ -> w)) in
   Ip.iter ~threads ~f idx ; Ok ()
 
-module V = Cd.Verify(Uid)(Us)(IO)
+module V = Clib.Dec.Verify(Uid)(Us)(IO)
 
 let unpack_without_idx ~digest threads fformat fpath =
   let open Rresult.R in
@@ -144,7 +153,7 @@ let unpack_without_idx ~digest threads fformat fpath =
     let ic = Unix.in_channel_of_descr fd in
     in_channel_length ic in
   let index uid = raise (Not_found uid) in
-  let t = Cd.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
+  let t = Clib.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 
   let digest ~kind ?(off= 0) ?len buf =
     let len = match len with Some len -> len | None -> Bigstringaf.length buf - off in
@@ -159,7 +168,7 @@ let unpack_without_idx ~digest threads fformat fpath =
     | Ok (Ok ()) -> record uid fpath ; uid
     | Ok (Error _) -> .
     | Error _ as err -> Rresult.R.failwith_error_msg err in
-  let oracle = { oracle with Cd.digest= digest } in
+  let oracle = { oracle with Clib.Dec.digest= digest } in
 
   V.verify ~threads ~map:unix_map ~oracle t ~matrix ; Unix.close fd ; Ok ()
 
@@ -174,8 +183,8 @@ let unpack ~digest threads v fformat fpath =
     let fd = Unix.openfile (Fpath.to_string idx) Unix.[ O_RDONLY ] 0o644 in
     let mp = Mmap.V1.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
     let mp = Bigarray.array1_of_genarray mp in
-    let idx = Cd.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
-    let lru = Cache.create ~capacity:0xFFFFFF in
+    let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+    let lru = Cache.create ~capacity:0xFFFF in
 
     let res = unpack_with_idx ~digest threads fformat lru idx fpath in
     Unix.close fd ; res
