@@ -1,5 +1,13 @@
 open Sigs
 
+module Option = struct
+  let bind x f = match x with Some x -> f x | None -> None
+  let map f = function Some x -> Some (f x) | None -> None
+  let value ~default = function Some x -> x | None -> default
+  let ( >>= ) = bind
+  let ( >>| ) : 'a option -> ('a -> 'b) -> 'b option = fun x f -> map f x
+end
+
 type 'uid entry =
   { uid : 'uid
   ; kind : kind
@@ -53,11 +61,7 @@ module Utils = struct
           (if len = 0x10000 then 1 else length_of_copy_code len) +
           acc)
       0 hunks
-
-  let has_only_inserts = List.for_all (function Duff.Insert _ -> true | _ -> false)
 end
-
-let _max_depth = 60
 
 module W = struct
   type 'a t = 'a Weak.t
@@ -84,6 +88,8 @@ type 'uid q = { mutable patch : 'uid patch option
               ; entry : 'uid entry
               ; v : Dec.v W.t }
 
+let target_uid { entry; _ } = entry.uid
+
 let pp_patch target_length pp_uid ppf patch =
   Fmt.pf ppf "{ @[<hov>hunks= %d;@ \
                        depth= %d;@ \
@@ -91,6 +97,8 @@ let pp_patch target_length pp_uid ppf patch =
                        source_length= %d;@] }"
     (Utils.length ~source:patch.source_length ~target:target_length patch.hunks)
     patch.depth pp_uid patch.source patch.source_length
+
+[@@@warning "-32"] (* XXX(dinosaure): pretty-printers. *)
 
 let pp_kind ppf = function
   | `A -> Fmt.string ppf "a"
@@ -121,6 +129,8 @@ let pp_q pp_uid ppf q =
     Fmt.(Dump.option (pp_patch q.entry.length pp_uid)) q.patch
     (pp_entry pp_uid) q.entry
     (if Weak.check q.v 0 then "#raw" else "NULL")
+
+[@@@warning "+32"]
 
 type ('uid, 's) load = 'uid -> (Dec.v, 's) io
 
@@ -199,9 +209,9 @@ let apply { bind; return; } ~load ~uid_ln ~(source:'uid p) ~(target:'uid q) =
   let hunks = Duff.delta source_index (Bigstringaf.sub ~off:0 ~len:(Dec.len target_v) (Dec.raw target_v)) in
 
   target.patch <- Some { hunks
-                        ; source= source.entry.uid
-                        ; source_length= source.entry.length
-                        ; depth= source.depth + 1; } ;
+                       ; source= source.entry.uid
+                       ; source_length= source.entry.length
+                       ; depth= source.depth + 1; } ;
   return ()
 
 module Delta (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID) = struct
@@ -217,7 +227,7 @@ module Delta (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (
     { bind= (fun x f -> inj (IO.bind (prj x) (fun x -> prj (f x))))
     ; return= (fun x -> inj (IO.return x)) }
 
-  let same_island : 'uid -> 'uid -> bool = fun _ _ -> true
+  let[@warning "-32"] same_island : 'uid -> 'uid -> bool = fun _ _ -> true
   (* XXX(dinosaure): TODO [delta-islands]! *)
 
   let delta ~load ~weight targets =
@@ -232,18 +242,15 @@ module Delta (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (
       let rec go = function
         | [] -> return ()
         | (k, v) :: r -> ( try f k v >>= fun () -> (go[@tailcall]) r with Break -> return () ) in
-      go (Window.to_list window) >>= fun () ->
-      ( match !best with
-        | Some best ->
-          let[@warning "-8"] Some source = Window.find best window in
-          if source.depth < _max_depth
-          then Window.promote best window
-        | None -> () ) ; return () in
+      go (Window.to_list window) >>= fun () -> return !best in
     let rec map i =
       if i < Array.length targets
       then
-        ( go targets.(i) >>= fun () ->
+        ( go targets.(i) >>= fun best ->
           Window.add targets.(i).entry.uid (target_to_source targets.(i)) window
+        ; Option.(best >>= fun best -> Window.find best window
+                  >>| fun s -> if s.depth < _max_depth then Window.promote best window else ())
+          |> Option.value ~default:()
         ; (map[@tailcall]) (succ i) )
       else return () in
     map 0
@@ -288,17 +295,17 @@ end
 module N : sig
   type encoder
 
-  type tmp =
+  type b =
     { i : Bigstringaf.t
     ; q : Dd.B.t
     ; w : Dd.window }
 
-  val encoder : 's scheduler -> tmp:tmp -> load:('uid, 's) load -> 'uid q -> (encoder, 's) io
+  val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> 'uid q -> (encoder, 's) io
   val encode : o:Bigstringaf.t -> encoder -> [ `Flush of (encoder * int) | `End ]
   val dst : encoder -> Bigstringaf.t -> int -> int -> encoder
 end = struct
-  type tmp =
-    { i : Bigstringaf.t (* to store [h] output. *)
+  type b =
+    { i : Bigstringaf.t
     ; q : Dd.B.t
     ; w : Dd.window }
 
@@ -325,31 +332,22 @@ end = struct
     | `End -> `End
 
   let encode ~o = function
-    | Z encoder -> ( match encode_zlib ~o encoder with `Flush (encoder, len) -> `Flush (Z encoder, len) | `End -> `End )
-    | H encoder -> ( match encode_hunk ~o encoder with `Flush (encoder, len) -> `Flush (H encoder, len) | `End -> `End )
+    | Z encoder ->
+      ( match encode_zlib ~o encoder with
+        | `Flush (encoder, len) -> `Flush (Z encoder, len)
+        | `End -> `End )
+    | H encoder ->
+      ( match encode_hunk ~o encoder with
+        | `Flush (encoder, len) -> `Flush (H encoder, len)
+        | `End -> `End )
 
   let dst encoder s j l = match encoder with
     | Z encoder -> let encoder = Zz.N.dst encoder s j l in Z encoder
     | H encoder -> let encoder = Zh.N.dst encoder s j l in H encoder
 
-  let compress { bind; return; } ~tmp ~load target =
-    let ( >>= ) = bind in
-
-    let load_if weak uid = match W.get weak with
-      | Some v -> return v
-      | None ->
-        load uid >>= fun v -> W.set weak v ; return v in
-
-    load_if target.v target.entry.uid >>= fun v ->
-    let encoder = Zz.N.encoder `Manual `Manual ~q:tmp.q ~w:tmp.w ~level:4 in
-    let encoder = Zz.N.src encoder (Dec.raw v) 0 (Dec.len v) in
-    let encoder = Zz.N.dst encoder tmp.i 0 (Bigstringaf.length tmp.i) in
-
-    return (Z encoder)
-
   let encoder
-    : type s. s scheduler -> tmp:tmp -> load:('uid, s) load -> 'uid q -> (encoder, s) io
-    = fun ({ bind; return; } as s) ~tmp ~load target ->
+    : type s. s scheduler -> b:b -> load:('uid, s) load -> 'uid q -> (encoder, s) io
+    = fun { bind; return; } ~b ~load target ->
       let ( >>= ) = bind in
 
       let load_if weak uid = match W.get weak with
@@ -361,7 +359,86 @@ end = struct
       | Some { hunks; source_length; _ } ->
         load_if target.v target.entry.uid >>= fun v ->
         let raw = Bigstringaf.sub ~off:0 ~len:(Dec.len v) (Dec.raw v) in
-        let encoder = Zh.N.encoder ~i:tmp.i ~q:tmp.q ~w:tmp.w ~source:source_length raw `Manual hunks in
+        let encoder = Zh.N.encoder ~i:b.i ~q:b.q ~w:b.w ~source:source_length raw `Manual hunks in
         return (H encoder)
-      | None -> compress s ~tmp ~load target
+      | None ->
+        load_if target.v target.entry.uid >>= fun v ->
+        let encoder = Zz.N.encoder `Manual `Manual ~q:b.q ~w:b.w ~level:0 in
+        let encoder = Zz.N.src encoder (Dec.raw v) 0 (Dec.len v) in
+
+        return (Z encoder)
 end
+
+type ('uid, 's) find = 'uid -> (int option, 's) io
+
+type b =
+  { i : Bigstringaf.t
+  ; q : Dd.B.t
+  ; w : Dd.window
+  ; o : Bigstringaf.t }
+
+let encode_header ~o kind length =
+  let c = ref ((kind lsl 4) lor (length land 15)) in
+  let l = ref (length asr 4) in
+  let p = ref 0 in
+
+  while !l != 0 do
+    Bigstringaf.set o !p (Char.unsafe_chr (!c lor 0x80)) ;
+    c := !l land 0x7f ;
+    l := !l asr 7 ;
+    incr p ;
+  done ;
+
+  Bigstringaf.set o !p (Char.unsafe_chr !c) ;
+  incr p ; !p
+
+type 'uid uid =
+  { uid_ln : int
+  ; uid_rw : 'uid -> string }
+
+let kind_to_int = function
+  | `A -> 0b001
+  | `B -> 0b010
+  | `C -> 0b011
+  | `D -> 0b100
+
+let encode_entry
+  : type s. s scheduler -> b:b -> find:('uid, s) find -> load:('uid, s) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, s) io
+  = fun ({ bind; return; } as s) ~b ~find ~load ~uid target ~cursor ->
+    let ( >>= ) = bind in
+
+    if Bigstringaf.length b.o < 20 then Fmt.invalid_arg "encode_entry" ;
+
+    match target.patch with
+    | None ->
+      let off = encode_header ~o:b.o (kind_to_int target.entry.kind) target.entry.length in
+      N.encoder s ~b:{ i= b.i; q= b.q; w= b.w; } ~load target >>= fun encoder ->
+      return (off, N.dst encoder b.o off (Bigstringaf.length b.o - off))
+    | Some { source; source_length; hunks; _ } -> find source >>= function
+      | Some offset ->
+        let off = encode_header ~o:b.o 0b110 (Utils.length ~source:source_length ~target:target.entry.length hunks) in
+        let buf = Bytes.create 10 in
+
+        let p = ref 9 in
+        let n = ref (cursor - offset) in
+
+        Bytes.set buf !p (Char.unsafe_chr (!n land 127)) ;
+        while (!n asr 7) != 0 do
+          n := !n asr 7 ;
+          decr p ;
+          Bytes.set buf !p (Char.unsafe_chr (128 lor ((!n - 1) land 127))) ;
+        done ;
+
+        Bigstringaf.blit_from_bytes buf ~src_off:!p b.o ~dst_off:off ~len:(10 - !p) ;
+        N.encoder s ~b:{ i= b.i; q= b.q; w= b.w; } ~load target >>= fun encoder ->
+        let off = off + (10 - !p) in
+        let len = Bigstringaf.length b.o - off in
+        return (off, N.dst encoder b.o off len)
+      | None ->
+        let off = encode_header ~o:b.o 0b111 (Utils.length ~source:source_length ~target:target.entry.length hunks) in
+        let raw = uid.uid_rw source in
+        Bigstringaf.blit_from_string raw ~src_off:0 b.o ~dst_off:off ~len:uid.uid_ln ;
+        N.encoder s ~b:{ i= b.i; q= b.q; w= b.w; } ~load target >>= fun encoder ->
+        let off = off + uid.uid_ln in
+        let len = Bigstringaf.length b.o - off in
+        return (off, N.dst encoder b.o off len)

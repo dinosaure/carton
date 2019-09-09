@@ -2,6 +2,7 @@ open Sigs
 
 module W : sig
   type 'fd t
+
   and slice =
     { offset : int
     ; length : int
@@ -12,11 +13,16 @@ module W : sig
 end
 
 type weight = private int
+(** Type of [weight]. [weight] is {b not} {i length} of object but bytes needed to extract it. *)
 
 val null : weight
+(** {i zero} weight. *)
+
 val weight_of_int_exn : int -> weight
+(** [weight_of_int_exn n] is the weight of [n]. *)
 
 type ('fd, 's) read = 'fd -> bytes -> off:int -> len:int -> (int, 's) io
+(** Type of read {i syscall}. *)
 
 module Idx = Idx
 
@@ -67,9 +73,12 @@ type raw
 (** Type of a [Carton] object as is into a [Carton] file. *)
 
 val make_raw : weight:weight -> raw
+(** [make_raw ~weight] allocates a raw. *)
+
 val weight_of_raw : raw -> weight
 
 type v
+(** Type of values. *)
 
 val v : kind:kind -> ?depth:int -> Bigstringaf.t -> v
 val kind : v -> kind

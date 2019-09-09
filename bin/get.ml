@@ -55,7 +55,7 @@ let of_off ~hex ~hxd off fpath =
     let raw = Clib.Dec.raw v in
     let len = Clib.Dec.len v in
     if hex then Fmt.pr "@[<hov>%a@]\n%!" (Hxd_string.pp hxd) (Bigstringaf.substring raw ~off:0 ~len)
-    else Fmt.pr "%s\n%!" (Bigstringaf.substring raw ~off:0 ~len) ; Ok ()
+    else Fmt.pr "%s%!" (Bigstringaf.substring raw ~off:0 ~len) ; Ok ()
   | exception No_idx ->
     Rresult.R.error_msgf "Packed archive must have associated index file."
   | exception (Not_found uid) ->

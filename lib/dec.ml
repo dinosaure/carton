@@ -1,5 +1,7 @@
 open Sigs
 
+let () = Printexc.record_backtrace true
+
 let input_bigstring ic buf off len =
   let tmp = Bytes.create len in
   let len = input ic tmp 0 len in

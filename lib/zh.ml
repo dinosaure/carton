@@ -29,7 +29,7 @@ end = struct
     ; h : H.N.encoder
     ; z : Zz.N.encoder
     ; t : Zz.bigstring
-    ; d : Duff.hunk list }
+    ; d : [ `Copy of (int * int) | `Insert of string | `End | `Await ] list }
 
   type ret = [ `Flush of encoder | `End ]
 
@@ -42,59 +42,65 @@ end = struct
       do Buffer.add_char b (Bigstringaf.get e.o i) done ;
       k { e with o_pos= 0 }
 
-  let rec encode e = match Zz.N.encode e.z with
+  let rec encode_z e = match Zz.N.encode e.z with
     | `End z ->
       let len = Bigstringaf.length e.o - Zz.N.dst_rem z in
       let z = Zz.N.dst z Dd.bigstring_empty 0 0 in
+
       if len > 0
-      then flush encode { e with z; o_pos= len }
+      then flush encode_z { e with z; o_pos= len }
       else `End
     | `Flush z ->
       let len = Bigstringaf.length e.o - Zz.N.dst_rem z in
-      flush encode { e with z; o_pos= len }
+      flush encode_z { e with z; o_pos= len }
     | `Await z ->
-      let rec go d =
-        let v, d = match d with
-          | Duff.Copy (off, len) :: d ->
-            `Copy (off, len), d
-          | Duff.Insert (off, len) :: d ->
-            `Insert (Bigstringaf.substring e.src ~off ~len), d
-          | [] -> `End, [] in
-        match H.N.encode e.h v, d with
-        | `Ok, [] ->
-          let len = Bigstringaf.length e.t - H.N.dst_rem e.h in
-          let z = Zz.N.src z e.t 0 len in
-          encode { e with d; z }
-        | `Ok, d -> go d
-        | `Partial, d ->
-          let len = Bigstringaf.length e.t - H.N.dst_rem e.h in
-          let z = Zz.N.src z e.t 0 len in
-          encode { e with d; z } in
       match e.d with
       | [] ->
         let z = Zz.N.src z Dd.bigstring_empty 0 0 in
-        encode { e with z }
+        encode_z { e with z }
       | d ->
-        H.N.dst e.h e.t 0 (Dd.bigstring_length e.t) ; go d
+        H.N.dst e.h e.t 0 (Dd.bigstring_length e.t) ; encode_h e d
+
+  and encode_h e d =
+    let v, d = match d with
+      | v :: d -> v, d
+      | [] -> `End, [] in
+    match H.N.encode e.h v, d with
+    | `Ok, [] ->
+      let len = Bigstringaf.length e.t - H.N.dst_rem e.h in
+      let z = Zz.N.src e.z e.t 0 len in
+
+      encode_z { e with d; z }
+    | `Ok, d ->
+      encode_h { e with d } d
+    | `Partial, d ->
+      let len = Bigstringaf.length e.t - H.N.dst_rem e.h in
+      let z = Zz.N.src e.z e.t 0 len in
+
+      encode_z { e with d= `Await :: d; z }
+
+  let encode e = encode_z e
 
   let encoder ~i ~q ~w ~source src dst hunks =
     let o, o_pos, o_max = match dst with
       | `Manual -> Dd.bigstring_empty, 1, 0
       | `Buffer _
       | `Channel _ -> Dd.bigstring_create H.io_buffer_size, 0, H.io_buffer_size - 1 in
+    let z = Zz.N.encoder `Manual `Manual ~q ~w ~level:0 in
+    let z = Zz.N.dst z Dd.bigstring_empty 0 0 in
     { dst
     ; src
     ; o; o_pos; o_max
     ; t= i
-    ; d= hunks
-    ; z= Zz.N.encoder `Manual `Manual ~q ~w ~level:4
+    ; d= List.map (function Duff.Copy (off, len) -> `Copy (off, len) | Duff.Insert (off, len) -> `Insert (Bigstringaf.substring src ~off ~len)) hunks
+    ; z
     ; h= H.N.encoder `Manual ~dst_len:(Bigstringaf.length src) ~src_len:source }
 
-  let dst_rem e = Zz.N.dst_rem e.z
+  let dst_rem e = e.o_max - e.o_pos + 1
 
   let dst e s j l =
     let z = Zz.N.dst e.z s j l in
-    { e with z }
+    { e with z; o= s; o_pos= j; o_max= j + l - 1 }
 end
 
 module M : sig
