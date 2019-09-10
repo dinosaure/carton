@@ -21,7 +21,18 @@ val target_uid : 'uid q -> 'uid
 val entry_to_target : 's scheduler -> load:('uid, 's) load -> 'uid entry -> ('uid q, 's) io
 val apply : 's scheduler -> load:('uid, 's) load -> uid_ln:int -> source:'uid p -> target:'uid q -> (unit, 's) io
 
-module Delta (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID) : sig
+module type VERBOSE = sig
+  type 'a fiber
+
+  val succ : unit -> unit fiber
+  val print : unit -> unit fiber
+end
+
+module Delta
+    (Scheduler : SCHEDULER)
+    (IO : IO with type 'a t = 'a Scheduler.s)
+    (Uid : UID)
+    (Verbose : VERBOSE with type 'a fiber = 'a IO.t) : sig
   val s : Scheduler.t scheduler
 
   val delta :
@@ -48,4 +59,5 @@ type b =
   ; w : Dd.window
   ; o : Bigstringaf.t }
 
-val encode_entry : 's scheduler -> b:b -> find:('uid, 's) find -> load:('uid, 's) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, 's) io
+val header_of_pack : length:int -> Bigstringaf.t -> int -> int -> unit
+val encode_target : 's scheduler -> b:b -> find:('uid, 's) find -> load:('uid, 's) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, 's) io

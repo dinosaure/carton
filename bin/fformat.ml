@@ -18,19 +18,27 @@ module T = struct
   and epsilon = unit
   and 'uid v = V : ('uid, 'v) g -> 'uid v
 
-  let map
+  let concat
     : elt -> ('uid, 'x) g -> 'uid v
     = fun fformat t -> match fformat with
-      | Kind -> V (Product (t, Kind))
-      | Uid -> V (Product (t, Uid))
-      | String v -> V (Product (t, String v))
-      | Percent -> V (Product (t, Percent))
+      | Kind -> V (Product (Kind, t))
+      | Uid -> V (Product (Uid, t))
+      | String v -> V (Product (String v, t))
+      | Percent -> V (Product (Percent, t))
 
   let make fformat =
-    List.fold_left (fun (V v) x -> map x v) (V End) fformat
+    List.fold_right (fun x (V v) -> concat x v) fformat (V End)
 
   let kind_of_string : cursor:int -> string -> int * [ `A | `B | `C | `D ]
-    = fun ~cursor:_ _ -> assert false
+    = fun ~cursor x ->
+      if String.length x - cursor > 0
+      then match x.[cursor] with
+        | 'a' -> cursor + 1, `A
+        | 'b' -> cursor + 1, `B
+        | 'c' -> cursor + 1, `C
+        | 'd' -> cursor + 1, `D
+        | _ -> Fmt.invalid_arg "kind_of_string"
+      else Fmt.invalid_arg "kind_of_string"
 
   type 'uid uid_wr = cursor:int -> string -> int * 'uid
 
@@ -43,9 +51,10 @@ module T = struct
       | Uid -> fun cursor x ->
         ( try let cursor, v = uid_wr ~cursor x in Some (v, cursor)
           with _ -> None )
-      | String p -> fun cursor x ->
-        let p' = String.sub x cursor (String.length p) in
-        if String.equal p p' then Some (p, cursor + String.length p) else None
+      | String p ->
+        fun cursor x ->
+          let p' = String.sub x cursor (String.length p) in
+          if String.equal p p' then Some (p, cursor + String.length p) else None
       | Percent -> fun cursor x ->
         if x.[cursor] = '%'
         then Some (`x25, succ cursor)

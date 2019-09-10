@@ -979,7 +979,10 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
 
   let uid_of_status = function
     | Resolved_node (uid, _, _, _) | Resolved_base (uid, _) -> uid
-    | _ -> Fmt.invalid_arg "Current status is not resolved"
+    | Unresolved_node ->
+      Fmt.invalid_arg "Current status is not resolved"
+    | Unresolved_base offset ->
+      Fmt.invalid_arg "Current status is not resolved (offset: %d)" offset
 
   let kind_of_status = function
     | Resolved_base (_, kind) | Resolved_node (_, kind, _, _) -> kind

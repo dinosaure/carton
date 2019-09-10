@@ -2,10 +2,7 @@ open Sigs
 
 module Option = struct
   let bind x f = match x with Some x -> f x | None -> None
-  let map f = function Some x -> Some (f x) | None -> None
-  let value ~default = function Some x -> x | None -> default
   let ( >>= ) = bind
-  let ( >>| ) : 'a option -> ('a -> 'b) -> 'b option = fun x f -> map f x
 end
 
 type 'uid entry =
@@ -169,10 +166,10 @@ let apply { bind; return; } ~load ~uid_ln ~(source:'uid p) ~(target:'uid q) =
   let ( >>= ) = bind in
 
   if source.entry.kind <> target.entry.kind
-  then raise_notrace Break ;
+  then ( raise_notrace Break ) ;
 
   if depth_of_source source >= _max_depth
-  then raise_notrace Next ;
+  then ( raise_notrace Next ) ;
 
   let max_length, ref_depth = match target.patch with
     | Some { hunks; source_length; depth; _ } ->
@@ -182,14 +179,17 @@ let apply { bind; return; } ~load ~uid_ln ~(source:'uid p) ~(target:'uid q) =
 
   let max_length = max_length * (_max_depth - depth_of_source source) / (_max_depth - ref_depth + 1) in
 
-  if max_length == 0 then raise_notrace Next ;
+  if max_length == 0
+  then ( raise_notrace Next ) ;
 
   let diff =
     if source.entry.length < target.entry.length
     then target.entry.length - source.entry.length else 0 in
 
-  if diff >= max_length then raise_notrace Next ;
-  if target.entry.length < source.entry.length / 32 then raise_notrace Next ;
+  if diff >= max_length
+  then ( raise_notrace Next ) ;
+  if target.entry.length < source.entry.length / 32
+  then ( raise_notrace Next ) ;
   (* if not (same_island target.entry.uid source.entry.uid) then raise_notrace Next ; *)
 
   let load_if weak uid = match W.get weak with
@@ -214,7 +214,18 @@ let apply { bind; return; } ~load ~uid_ln ~(source:'uid p) ~(target:'uid q) =
                        ; depth= source.depth + 1; } ;
   return ()
 
-module Delta (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID) = struct
+module type VERBOSE = sig
+  type 'a fiber
+
+  val succ : unit -> unit fiber
+  val print : unit -> unit fiber
+end
+
+module Delta
+    (Scheduler : SCHEDULER)
+    (IO : IO with type 'a t = 'a Scheduler.s)
+    (Uid : UID)
+    (Verbose : VERBOSE with type 'a fiber = 'a IO.t) = struct
   module K = struct type t = Uid.t let hash = Hashtbl.hash let equal = Uid.equal end
   module V = struct type t = Uid.t p let weight ({ entry; _ } : Uid.t p) = entry.length end
   module Window = Lru.M.Make(K)(V)
@@ -236,22 +247,28 @@ module Delta (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (
     let go target =
       let best : Window.k option ref = ref None in
       let f (key : Window.k) source =
-        try ( apply s ~load ~uid_ln:Uid.length ~source ~target |> Scheduler.prj >>= fun () -> best := (Some key) ; return () )
+        try ( apply s ~load ~uid_ln:Uid.length ~source ~target |> Scheduler.prj
+              >>= fun () -> best := (Some key) ; return () )
         with Next -> return ()
            | Break as exn -> raise_notrace exn in
       let rec go = function
-        | [] -> return ()
-        | (k, v) :: r -> ( try f k v >>= fun () -> (go[@tailcall]) r with Break -> return () ) in
+        | [] -> Verbose.succ () >>= fun () -> return ()
+        | (k, v) :: r ->
+          ( try f k v >>= fun () -> (go[@tailcall]) r
+            with Break -> return () ) in
       go (Window.to_list window) >>= fun () -> return !best in
     let rec map i =
       if i < Array.length targets
       then
         ( go targets.(i) >>= fun best ->
+          Verbose.print () >>= fun () ->
           Window.add targets.(i).entry.uid (target_to_source targets.(i)) window
-        ; Option.(best >>= fun best -> Window.find best window
-                  >>| fun s -> if s.depth < _max_depth then Window.promote best window else ())
-          |> Option.value ~default:()
-        ; (map[@tailcall]) (succ i) )
+          ; ( match Option.(best >>= fun best -> Window.find best window) with
+              | Some s ->
+                if s.depth < _max_depth
+                then Window.promote s.entry.uid window
+              | None -> Window.trim window )
+          ; (map[@tailcall]) (succ i) )
       else return () in
     map 0
 
@@ -402,7 +419,15 @@ let kind_to_int = function
   | `C -> 0b011
   | `D -> 0b100
 
-let encode_entry
+let header_of_pack ~length buf off len =
+  if off < 0 || len < 0 || off + len > Bigstringaf.length buf
+     || len < 4 + 4 + 4
+  then Fmt.invalid_arg "header_of_pack" ;
+  Bigstringaf.set_int32_be buf (off + 0) 0x5041434bl ;
+  Bigstringaf.set_int32_be buf (off + 4) 0x2l ;
+  Bigstringaf.set_int32_be buf (off + 8) (Int32.of_int length)
+
+let encode_target
   : type s. s scheduler -> b:b -> find:('uid, s) find -> load:('uid, s) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, s) io
   = fun ({ bind; return; } as s) ~b ~find ~load ~uid target ~cursor ->
     let ( >>= ) = bind in

@@ -184,7 +184,7 @@ let unpack ~digest threads v fformat fpath =
     let mp = Mmap.V1.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
     let mp = Bigarray.array1_of_genarray mp in
     let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
-    let lru = Cache.create ~capacity:0xFFFF in
+    let lru = Cache.create ~capacity:0x10000 in
 
     let res = unpack_with_idx ~digest threads fformat lru idx fpath in
     Unix.close fd ; res
