@@ -68,6 +68,7 @@ type ('fd, 'uid) t
 val with_z : Bigstringaf.t -> ('fd, 'uid) t -> ('fd, 'uid) t
 val with_w : 'fd W.t -> ('fd, 'uid) t -> ('fd, 'uid) t
 val with_allocate : allocate:(int -> Dd.window) -> ('fd, 'uid) t -> ('fd, 'uid) t
+val fd : ('fd, 'uid) t -> 'fd
 
 type raw
 (** Type of a [Carton] object as is into a [Carton] file. *)
@@ -122,6 +123,7 @@ val of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> raw -> 'uid
 type path
 
 val path_to_list : path -> int list
+val kind_of_path : path -> [ `A | `B | `C | `D ]
 
 val path_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> cursor:int -> (path, 's) io
 val path_of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> 'uid -> (path, 's) io

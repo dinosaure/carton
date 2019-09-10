@@ -158,6 +158,12 @@ let find idx hash =
     Fmt.epr "%a not found.\n%!" Digestif.SHA1.pp (Obj.magic hash) ;
     None
 
+let exists idx uid =
+  let uid = idx.uid_rw uid in
+  match isearch idx uid with
+  | _ -> true
+  | exception Not_found -> false
+
 let get_uid idx n =
   let res = Bytes.create idx.uid_ln in
   Bigstringaf.blit_to_bytes idx.mp ~src_off:(hashes_offset + (n * idx.uid_ln)) res ~dst_off:0 ~len:idx.uid_ln ;

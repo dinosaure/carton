@@ -410,6 +410,7 @@ type ('fd, 'uid) t =
 let with_z tmp t = { t with tmp }
 let with_w ws t = { t with ws }
 let with_allocate ~allocate t = { t with allocate }
+let fd { ws= { W.fd; _ }; _ } = fd
 
 let make
   : type fd uid. fd -> z:Bigstringaf.t -> allocate:(int -> Zz.window) -> uid_ln:int -> uid_rw:(string -> uid) -> (uid -> int) -> (fd, uid) t
@@ -769,13 +770,21 @@ and of_offset
 
 type path =
   { path : int array
-  ; depth : int }
+  ; depth : int
+  ; kind : [ `A | `B | `C | `D ] }
 
-let path_to_list { path; depth; } =
+let path_to_list { path; depth; _ } =
   Array.sub path 0 depth |> Array.to_list
 
+let kind_of_int = function
+  | 0b001 -> `A
+  | 0b010 -> `B
+  | 0b011 -> `C
+  | 0b100 -> `D
+  | _ -> assert false
+
 let rec fill_path_from_ofs_delta
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> anchor:int -> cursor:int -> W.slice -> (int, s) io
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> anchor:int -> cursor:int -> W.slice -> (int * [ `A | `B | `C | `D ], s) io
   = fun ({ bind; _ } as s) ~map t ~depth path ~anchor ~cursor slice ->
     let ( >>= ) = bind in
 
@@ -783,7 +792,7 @@ let rec fill_path_from_ofs_delta
     (fill_path_from_offset[@tailcall]) s ~map t ~depth:(succ depth) path ~cursor:(anchor - base_offset)
 
 and fill_path_from_ref_delta
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> cursor:int -> W.slice -> (int, s) io
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> cursor:int -> W.slice -> (int * [ `A | `B | `C | `D ], s) io
   = fun ({ bind; _ } as s) ~map t ~depth path ~cursor slice ->
   let ( >>= ) = bind in
 
@@ -791,14 +800,14 @@ and fill_path_from_ref_delta
   (fill_path_from_uid[@tailcall]) s ~map t ~depth path uid
 
 and fill_path_from_uid
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> uid -> (int, s) io
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> uid -> (int * [ `A | `B | `C | `D ], s) io
   = fun s ~map t ~depth path uid ->
     let cursor = t.fd uid in
     path.(depth - 1) <- cursor ;
     (fill_path_from_offset[@tailcall]) s ~map t ~depth:(succ depth) path ~cursor
 
 and fill_path_from_offset
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> cursor:int -> (int, s) io
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> depth:int -> int array -> cursor:int -> (int * [ `A | `B | `C | `D ], s) io
   = fun ({ return; bind; } as s) ~map t ~depth path ~cursor ->
     let ( >>= ) = bind in
     W.load s ~map t.ws cursor >>= function
@@ -810,8 +819,8 @@ and fill_path_from_offset
 
       match kind with
       | 0b000 | 0b101 -> failwith "bad type"
-      | 0b001 | 0b010 | 0b011 | 0b100 ->
-        return depth
+      | (0b001 | 0b010 | 0b011 | 0b100) as v ->
+        return (depth, kind_of_int v)
       | 0b110 ->
         (fill_path_from_ofs_delta[@tailcall]) s ~map t ~depth path ~anchor:cursor ~cursor:(slice.W.offset + pos) slice
       | 0b111 ->
@@ -823,8 +832,8 @@ let path_of_offset
   = fun ({ return; bind; } as s) ~map t ~cursor ->
     let ( >>= ) = bind in
     let path = Array.make _max_depth 0 in
-    fill_path_from_offset s ~map t ~depth:1 path ~cursor >>= fun depth ->
-    return { depth; path; }
+    fill_path_from_offset s ~map t ~depth:1 path ~cursor >>= fun (depth, kind) ->
+    return { depth; path; kind; }
 
 let path_of_uid
   : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> uid -> (path, s) io
@@ -877,7 +886,8 @@ let base_of_offset
         | 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> failwith "Invalid object" in
       uncompress s ~map t kind raw ~cursor:(slice.W.offset + pos) slice
 
-let base_of_path { depth; path; } = path.(depth - 1)
+let base_of_path { depth; path; _ } = path.(depth - 1)
+let kind_of_path { kind; _ } = kind
 
 let of_offset_with_path
   : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> path:path -> raw -> cursor:int -> (v, s) io

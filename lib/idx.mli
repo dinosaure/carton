@@ -6,6 +6,7 @@ type optint = Optint.t
 val make : bigstring -> uid_ln:int -> uid_rw:('uid -> string) -> uid_wr:(string -> 'uid) -> 'uid idx
 val find : 'uid idx -> 'uid -> (optint * int) option
 val iter : f:(uid:'uid -> offset:int -> crc:optint -> unit) -> 'uid idx -> unit
+val exists : 'uid idx -> 'uid -> bool
 
 val max : 'uid idx -> int
 

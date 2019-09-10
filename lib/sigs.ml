@@ -1,13 +1,13 @@
 module type FUNCTOR = sig type 'a t end
 
-type ('a, 's) io
+type (+'a, 's) io
 
 type 's scheduler =
   { bind : 'a 'b. ('a, 's) io -> ('a -> ('b, 's) io) -> ('b, 's) io
   ; return : 'a. 'a -> ('a, 's) io }
 
 module type SCHEDULER = sig
-  type 'a s
+  type +'a s
   type t
 
   external inj : 'a s -> ('a, t) io = "%identity"
@@ -15,7 +15,7 @@ module type SCHEDULER = sig
 end
 
 module type MUTEX = sig
-  type 'a fiber
+  type +'a fiber
   type t
 
   val create : unit -> t
@@ -24,7 +24,7 @@ module type MUTEX = sig
 end
 
 module type FUTURE = sig
-  type 'a fiber
+  type +'a fiber
   type 'a t
 
   val wait : 'a t -> 'a fiber
@@ -32,7 +32,7 @@ module type FUTURE = sig
 end
 
 module type CONDITION = sig
-  type 'a fiber
+  type +'a fiber
   type mutex
   type t
 
@@ -43,7 +43,7 @@ module type CONDITION = sig
 end
 
 module type IO = sig
-  type 'a t
+  type +'a t
 
   module Future : FUTURE with type 'a fiber = 'a t
   module Mutex : MUTEX with type 'a fiber = 'a t
@@ -75,6 +75,7 @@ module type UID = sig
   val compare : t -> t -> int
   val length : int
   val of_raw_string : string -> t
+  val to_raw_string : t -> string
   val pp : t Fmt.t
   val null : t
 end
