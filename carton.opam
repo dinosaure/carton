@@ -18,15 +18,15 @@ run-test: [ "dune" "runtest" "-p" name "-j" jobs ]
 
 depends: [
   "ocaml"      {>= "4.03.0"}
-  "dune"       {build}
-  "base-bytes"
-  "bigarray-compat"
+  "base-unix"
+  "base-threads"
+  "dune"
+  "decompress"
+  "digestif"
   "mmap"
-  "optint"
-  "checkseum"
-  "camlzip"    {with-test & >= "1.07"}
-  "re"         {with-test & >= "1.7.2"}
-  "alcotest"   {with-test}
-  "bos"        {with-test}
   "cmdliner"
+  "bos"
+  "fpath"
+  "rresult"
+  "angstrom"
 ]
