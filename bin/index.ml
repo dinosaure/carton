@@ -1,8 +1,8 @@
 open Prelude
 open Core
 
-module Fp = Clib.Dec.Fp(Uid)
-module Verify = Clib.Dec.Verify(Uid)(Us)(IO)
+module Fp = Carton.Dec.Fp(Uid)
+module Verify = Carton.Dec.Verify(Uid)(Us)(IO)
 
 let z = Dd.bigstring_create Dd.io_buffer_size
 let allocate bits = Dd.make_window ~bits
@@ -94,7 +94,7 @@ let first_pass ~digest fpath =
   match go decoder with
   | Error _ as err -> err
   | Ok uid ->
-    Ok ({ Clib.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
+    Ok ({ Carton.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
         ; children= (fun ~cursor ~uid ->
               match Hashtbl.find_opt children (`Ofs cursor),
                     Hashtbl.find_opt children (`Ref uid) with
@@ -107,7 +107,7 @@ let first_pass ~digest fpath =
 
 exception Invalid_pack
 
-module Idx = Clib.Dec.Idx.N(Uid)
+module Idx = Carton.Dec.Idx.N(Uid)
 
 let index ~digest threads v output fpath =
   verbose := v ;
@@ -127,7 +127,7 @@ let index ~digest threads v output fpath =
     let ic = Unix.in_channel_of_descr fd in
     in_channel_length ic in
   let index _ = raise Not_found in
-  let t = Clib.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
+  let t = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 
   Verify.verify ~threads ~map:unix_map ~oracle t ~matrix ;
   end_delta () ;

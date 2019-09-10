@@ -700,8 +700,8 @@ let of_delta
         assert (Bigstringaf.length source >= src_len) ;
         assert (Bigstringaf.length payload >= dst_len) ;
 
-        let decoder = Zh.M.dst decoder payload 0 dst_len in
         let decoder = Zh.M.source decoder source in
+        let decoder = Zh.M.dst decoder payload 0 dst_len in
         (go[@tailcall]) cursor decoder
       | `Await decoder ->
         W.load s ~map t.ws cursor >>= function

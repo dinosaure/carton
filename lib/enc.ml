@@ -152,8 +152,10 @@ let entry_to_target
     load entry.uid >>= fun v -> (match entry.delta with
         | From uid ->
           load uid >>= fun s ->
+          let source = Bigstringaf.sub ~off:0 ~len:(Dec.len s) (Dec.raw s) in
+          let target = Bigstringaf.sub ~off:0 ~len:(Dec.len v) (Dec.raw v) in
           let index = Duff.make (Bigstringaf.sub ~off:0 ~len:(Dec.len s) (Dec.raw s)) in
-          let hunks = Duff.delta index (Bigstringaf.sub ~off:0 ~len:(Dec.len v) (Dec.raw v)) in
+          let hunks = Duff.delta index ~source ~target in
           return (Some { hunks; depth= Dec.depth v; source= uid; source_length= Dec.len s; })
         | Zero -> return None) >>= fun patch -> return { patch; entry; v= W.create_with v; }
 
@@ -206,7 +208,9 @@ let apply { bind; return; } ~load ~uid_ln ~(source:'uid p) ~(target:'uid q) =
   load_if target.v target.entry.uid >>= fun target_v ->
   index_if source.index source_v |> fun source_index ->
 
-  let hunks = Duff.delta source_index (Bigstringaf.sub ~off:0 ~len:(Dec.len target_v) (Dec.raw target_v)) in
+  let target_r = Bigstringaf.sub ~off:0 ~len:(Dec.len target_v) (Dec.raw target_v) in
+  let source_r = Bigstringaf.sub ~off:0 ~len:(Dec.len source_v) (Dec.raw source_v) in
+  let hunks = Duff.delta source_index ~source:source_r ~target:target_r in
 
   target.patch <- Some { hunks
                        ; source= source.entry.uid

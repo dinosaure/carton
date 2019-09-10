@@ -32,28 +32,28 @@ let idx_of_pack fpath =
     let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
     let mp = Mmap.V1.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
     let mp = Bigarray.array1_of_genarray mp in
-    let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+    let idx = Carton.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
 
     (fun () -> Unix.close fd),
-    (fun uid -> match Clib.Dec.Idx.find idx uid with Some (_, off) -> off | None -> raise (Not_found uid))
+    (fun uid -> match Carton.Dec.Idx.find idx uid with Some (_, off) -> off | None -> raise (Not_found uid))
 
 let of_off ~hex ~hxd off fpath =
   let open Rresult.R in
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mx = let ic = Unix.in_channel_of_descr fd in in_channel_length ic in
   idx_of_pack fpath >>= fun (close_idx, idx) ->
-  let pack = Clib.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string idx in
+  let pack = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string idx in
 
   let fiber () =
-    let ( >>= ) = unix.Clib.bind in
-    Clib.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Clib.Dec.null ~cursor:off >>= fun weight ->
-    let raw = Clib.Dec.make_raw ~weight in
-    Clib.Dec.of_offset unix ~map:unix_map pack raw ~cursor:off >>= fun v ->
-    close_idx () ; unix.Clib.return v in
+    let ( >>= ) = unix.Carton.bind in
+    Carton.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Carton.Dec.null ~cursor:off >>= fun weight ->
+    let raw = Carton.Dec.make_raw ~weight in
+    Carton.Dec.of_offset unix ~map:unix_map pack raw ~cursor:off >>= fun v ->
+    close_idx () ; unix.Carton.return v in
   match Us.prj (fiber ()) with
   | v ->
-    let raw = Clib.Dec.raw v in
-    let len = Clib.Dec.len v in
+    let raw = Carton.Dec.raw v in
+    let len = Carton.Dec.len v in
     if hex then Fmt.pr "@[<hov>%a@]\n%!" (Hxd_string.pp hxd) (Bigstringaf.substring raw ~off:0 ~len)
     else Fmt.pr "%s%!" (Bigstringaf.substring raw ~off:0 ~len) ; Ok ()
   | exception No_idx ->
@@ -66,27 +66,27 @@ let of_uid ~hex ~hxd uid fpath =
   let fd0 = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mp = Mmap.V1.map_file fd0 ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
   let mp = Bigarray.array1_of_genarray mp in
-  let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+  let idx = Carton.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
 
   let fpath = Fpath.set_ext "pack" fpath in
   let fd1 = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mx1 = let ic = Unix.in_channel_of_descr fd1 in in_channel_length ic in
-  let pck = Clib.Dec.make { fd= fd1; mx= mx1; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
-      (fun uid -> match Clib.Dec.Idx.find idx uid with
+  let pck = Carton.Dec.make { fd= fd1; mx= mx1; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
+      (fun uid -> match Carton.Dec.Idx.find idx uid with
          | Some (_, offset) -> offset
          | None -> raise (Not_found uid)) in
 
   let fiber () =
-    let ( >>= ) = unix.Clib.bind in
-    Clib.Dec.weight_of_uid unix ~map:unix_map pck ~weight:Clib.Dec.null uid >>= fun weight ->
-    let raw = Clib.Dec.make_raw ~weight in
-    Clib.Dec.of_uid unix ~map:unix_map pck raw uid >>= fun v ->
-    Unix.close fd0 ; Unix.close fd1 ; unix.Clib.return v in
+    let ( >>= ) = unix.Carton.bind in
+    Carton.Dec.weight_of_uid unix ~map:unix_map pck ~weight:Carton.Dec.null uid >>= fun weight ->
+    let raw = Carton.Dec.make_raw ~weight in
+    Carton.Dec.of_uid unix ~map:unix_map pck raw uid >>= fun v ->
+    Unix.close fd0 ; Unix.close fd1 ; unix.Carton.return v in
 
   match Us.prj (fiber ()) with
   | v ->
-    let raw = Clib.Dec.raw v in
-    let len = Clib.Dec.len v in
+    let raw = Carton.Dec.raw v in
+    let len = Carton.Dec.len v in
     if hex then Fmt.pr "@[<hov>%a@]\n%!" (Hxd_string.pp hxd) (Bigstringaf.substring raw ~off:0 ~len)
     else Fmt.pr "%s\n%!" (Bigstringaf.substring raw ~off:0 ~len) ; Ok ()
   | exception (Not_found uid) ->

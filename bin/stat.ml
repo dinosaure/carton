@@ -10,7 +10,7 @@ let pp_kind ppf = function
   | `D -> Fmt.string ppf "D"
 
 let pp_path ppf path =
-  let[@warning "-8"] x :: r = Clib.Dec.path_to_list path in
+  let[@warning "-8"] x :: r = Carton.Dec.path_to_list path in
   Fmt.pf ppf "  %10d@," x ; List.iter (Fmt.pf ppf "Δ %10d@,") r ;
 
 exception No_idx
@@ -27,10 +27,10 @@ let idx_of_pack fpath =
     let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
     let mp = Mmap.V1.map_file fd ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
     let mp = Bigarray.array1_of_genarray mp in
-    let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+    let idx = Carton.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
 
     (fun () -> Unix.close fd),
-    (fun uid -> match Clib.Dec.Idx.find idx uid with Some (_, off) -> off | None -> raise (Not_found uid))
+    (fun uid -> match Carton.Dec.Idx.find idx uid with Some (_, off) -> off | None -> raise (Not_found uid))
 
 let pp_stat ppf =
   Fmt.pf ppf "%a\n\
@@ -41,23 +41,23 @@ let pp_stat ppf =
               type:            %a\
               @[<hov>path: @[<v>%a@]@]\n%!"
 
-let of_off ~(digest:Uid.t Clib.Dec.digest) off fpath =
+let of_off ~(digest:Uid.t Carton.Dec.digest) off fpath =
   let open Rresult.R in
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mx = let ic = Unix.in_channel_of_descr fd in in_channel_length ic in
   idx_of_pack fpath >>= fun (close_idx, idx) ->
-  let pack = Clib.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string idx in
+  let pack = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string idx in
 
   let fiber () =
-    let ( >>= ) = unix.Clib.bind in
-    Clib.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Clib.Dec.null ~cursor:off >>= fun weight ->
-    Clib.Dec.path_of_offset unix ~map:unix_map pack ~cursor:off >>= fun path ->
-    let raw = Clib.Dec.make_raw ~weight in
-    Clib.Dec.of_offset_with_path unix ~map:unix_map pack ~path raw ~cursor:off >>= fun v ->
-    let uid = digest ~kind:(Clib.Dec.kind v) ~off:0 ~len:(Clib.Dec.len v) (Clib.Dec.raw v) in
+    let ( >>= ) = unix.Carton.bind in
+    Carton.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Carton.Dec.null ~cursor:off >>= fun weight ->
+    Carton.Dec.path_of_offset unix ~map:unix_map pack ~cursor:off >>= fun path ->
+    let raw = Carton.Dec.make_raw ~weight in
+    Carton.Dec.of_offset_with_path unix ~map:unix_map pack ~path raw ~cursor:off >>= fun v ->
+    let uid = digest ~kind:(Carton.Dec.kind v) ~off:0 ~len:(Carton.Dec.len v) (Carton.Dec.raw v) in
     pp_stat Fmt.stdout
-      Uid.pp uid off (weight :> int) (Clib.Dec.len v) pp_kind (Clib.Dec.kind v) pp_path path ;
-    Unix.close fd ; close_idx () ; unix.Clib.return () in
+      Uid.pp uid off (weight :> int) (Carton.Dec.len v) pp_kind (Carton.Dec.kind v) pp_path path ;
+    Unix.close fd ; close_idx () ; unix.Carton.return () in
 
   match Us.prj (fiber ()) with
   | () -> Ok ()
@@ -69,26 +69,26 @@ let of_uid uid fpath =
   let fd0 = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mp = Mmap.V1.map_file fd0 ~pos:0L Bigarray.char Bigarray.c_layout false [| stat.Unix.st_size |] in
   let mp = Bigarray.array1_of_genarray mp in
-  let idx = Clib.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+  let idx = Carton.Dec.Idx.make mp ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
 
   let fpath = Fpath.set_ext "pack" fpath in
   let fd1 = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mx1 = let ic = Unix.in_channel_of_descr fd1 in in_channel_length ic in
-  let pck = Clib.Dec.make { fd= fd1; mx= mx1; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
-      (fun uid -> match Clib.Dec.Idx.find idx uid with
+  let pck = Carton.Dec.make { fd= fd1; mx= mx1; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
+      (fun uid -> match Carton.Dec.Idx.find idx uid with
          | Some (_, offset) -> offset
          | None -> raise (Not_found uid)) in
 
   let fiber () =
-    let ( >>= ) = unix.Clib.bind in
-    Clib.Dec.weight_of_uid unix ~map:unix_map pck ~weight:Clib.Dec.null uid >>= fun weight ->
-    Clib.Dec.path_of_uid unix ~map:unix_map pck uid >>= fun path ->
-    let raw = Clib.Dec.make_raw ~weight in
-    Clib.Dec.of_uid unix ~map:unix_map pck raw uid >>= fun v ->
-    let[@warning "-8"] off :: _ = Clib.Dec.path_to_list path in
+    let ( >>= ) = unix.Carton.bind in
+    Carton.Dec.weight_of_uid unix ~map:unix_map pck ~weight:Carton.Dec.null uid >>= fun weight ->
+    Carton.Dec.path_of_uid unix ~map:unix_map pck uid >>= fun path ->
+    let raw = Carton.Dec.make_raw ~weight in
+    Carton.Dec.of_uid unix ~map:unix_map pck raw uid >>= fun v ->
+    let[@warning "-8"] off :: _ = Carton.Dec.path_to_list path in
     pp_stat Fmt.stdout
-      Uid.pp uid off (weight :> int) (Clib.Dec.len v) pp_kind (Clib.Dec.kind v) pp_path path ;
-    Unix.close fd0 ; Unix.close fd1 ; unix.Clib.return () in
+      Uid.pp uid off (weight :> int) (Carton.Dec.len v) pp_kind (Carton.Dec.kind v) pp_path path ;
+    Unix.close fd0 ; Unix.close fd1 ; unix.Carton.return () in
 
   match Us.prj (fiber ()) with
   | () -> Ok ()

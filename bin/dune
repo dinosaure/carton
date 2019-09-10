@@ -1,4 +1,4 @@
 (executable
- (name carton)
- (public_name carton)
- (libraries angstrom cmdliner bos fpath rresult carton.lib mmap unix threads digestif.c checkseum.c hxd.string))
+ (name pate)
+ (public_name carton.pate)
+ (libraries angstrom cmdliner bos fpath rresult carton mmap unix threads digestif.c checkseum.c hxd.string))

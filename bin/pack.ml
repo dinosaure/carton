@@ -26,7 +26,7 @@ let metadata ~uid ~kind fpath =
   let name = match kind with
     | `C -> Some (Fpath.filename fpath)
     | `A | `B | `D -> None in
-  close_in ic ; Clib.Enc.make_entry ~kind ~length:ln ?name uid
+  close_in ic ; Carton.Enc.make_entry ~kind ~length:ln ?name uid
 
 let load entries uid = match Hashtbl.find entries uid with
   | (fpath, kind) ->
@@ -35,7 +35,7 @@ let load entries uid = match Hashtbl.find entries uid with
     let mp0 = Mmap.V1.map_file fd Bigarray.char Bigarray.c_layout false [| st.Unix.st_size |] in
     let mp1 = Bigarray.array1_of_genarray mp0 in
     Gc.finalise (fun _ -> Unix.close fd) mp0 ;
-    Us.inj (Clib.Dec.v ~kind ~depth:0 mp1)
+    Us.inj (Carton.Dec.v ~kind ~depth:0 mp1)
 
 module Verbose = struct
   type 'a fiber = 'a
@@ -49,7 +49,7 @@ module Verbose = struct
   let flush () = if !verbose_entries then Fmt.pr "\n%!"
 end
 
-module D = Clib.Enc.Delta(Us)(IO)(Uid)(Verbose)
+module D = Carton.Enc.Delta(Us)(IO)(Uid)(Verbose)
 
 let deltify ~digest:_ ?(threads= 4) ~root fformat =
   let open Rresult.R in
@@ -57,7 +57,7 @@ let deltify ~digest:_ ?(threads= 4) ~root fformat =
   let load = load entries in
   let entries0 = Hashtbl.fold (fun k v a -> (k, v) :: a) entries [] |> Array.of_list in
   let entries1 = Array.map (fun (uid, (fpath, kind)) -> metadata ~uid ~kind fpath) entries0 in
-  Array.stable_sort Clib.Enc.compare_entry entries1 ;
+  Array.stable_sort Carton.Enc.compare_entry entries1 ;
   Verbose.max_entries := Array.length entries1 ;
   let targets = D.delta ~threads:(List.init threads (fun _ -> load)) ~weight:0x1000 entries1 in
   Verbose.flush () ; Ok (entries, targets)
@@ -99,19 +99,19 @@ let pack ~digest ?threads ~root fformat output =
     | exception Not_found -> Us.inj None in
 
   let uid =
-    { Clib.Enc.uid_ln= Uid.length
-    ; Clib.Enc.uid_rw= Uid.to_raw_string } in
+    { Carton.Enc.uid_ln= Uid.length
+    ; Carton.Enc.uid_rw= Uid.to_raw_string } in
 
   let load = load entries in
 
   let b =
-    { Clib.Enc.o= Bigstringaf.create Dd.io_buffer_size
-    ; Clib.Enc.i= Bigstringaf.create Dd.io_buffer_size
-    ; Clib.Enc.q= Dd.B.create 0x10000
-    ; Clib.Enc.w= Dd.make_window ~bits:15 } in
+    { Carton.Enc.o= Bigstringaf.create Dd.io_buffer_size
+    ; Carton.Enc.i= Bigstringaf.create Dd.io_buffer_size
+    ; Carton.Enc.q= Dd.B.create 0x10000
+    ; Carton.Enc.w= Dd.make_window ~bits:15 } in
 
   max_targets := Array.length targets ;
-  Clib.Enc.header_of_pack ~length:(Array.length targets) header 0 12 ;
+  Carton.Enc.header_of_pack ~length:(Array.length targets) header 0 12 ;
   output_bigstring oc header ~off:0 ~len:12 ;
 
   let iter targets =
@@ -119,23 +119,23 @@ let pack ~digest ?threads ~root fformat output =
 
     for i = 0 to Array.length targets - 1
     do
-      Hashtbl.add offsets (Clib.Enc.target_uid targets.(i)) !cursor ;
+      Hashtbl.add offsets (Carton.Enc.target_uid targets.(i)) !cursor ;
 
       let fiber () =
         let ( >>= ) = unix.bind in
 
-        Clib.Enc.encode_target unix
+        Carton.Enc.encode_target unix
           ~b ~find ~load ~uid targets.(i) ~cursor:!cursor >>= fun (len, encoder) ->
-        let rec go encoder = match Clib.Enc.N.encode ~o:b.o encoder with
+        let rec go encoder = match Carton.Enc.N.encode ~o:b.o encoder with
           | `Flush (encoder, len) ->
             output_bigstring oc b.o ~off:0 ~len ;
             cursor := !cursor + len ;
-            let encoder = Clib.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+            let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
             go encoder
           | `End -> () in
         output_bigstring oc b.o ~off:0 ~len ;
         cursor := !cursor + len ;
-        let encoder = Clib.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+        let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
         go encoder ; Us.inj () in
       Us.prj (fiber ()) ; succ_targets () ; print_targets ()
     done in
