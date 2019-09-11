@@ -440,7 +440,7 @@ module N = struct
     if off land 0x000000ff <> 0 then cmd := !cmd lor 0x01 ;
     if off land 0x0000ff00 <> 0 then cmd := !cmd lor 0x02 ;
     if off land 0x00ff0000 <> 0 then cmd := !cmd lor 0x04 ;
-    if off land 0xff000000 <> 0 then cmd := !cmd lor 0x08 ;
+    if off land 0x7f000000 <> 0 then cmd := !cmd lor 0x08 ;
 
     if len land 0x0000ff <> 0 then cmd := !cmd lor 0x10 ;
     if len land 0x00ff00 <> 0 then cmd := !cmd lor 0x20 ;
