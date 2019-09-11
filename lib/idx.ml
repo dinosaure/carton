@@ -101,9 +101,7 @@ let bsearch idx hash =
     else if cmp > 0
     then (go[@tailcall]) sub_off len
     else (go[@tailcall]) (sub_off + len) (sub_len - len) in
-  Fmt.epr "uid: %a.\n%!" Digestif.SHA1.pp (Obj.magic hash) ;
   let { off; _ } = go abs_off len in
-  Fmt.epr "off: %d.\n%!" off ;
   Int32.to_int a + (off - abs_off) / idx.uid_ln
 
 let isearch idx hash =
@@ -154,9 +152,7 @@ let find idx hash =
     let off = get_int32_be idx.mp (values_offset + (n * 4)) in
 
     Some (Optint.of_int32 crc, Int64.of_int32 off)
-  | exception Not_found ->
-    Fmt.epr "%a not found.\n%!" Digestif.SHA1.pp (Obj.magic hash) ;
-    None
+  | exception Not_found -> None
 
 let exists idx uid =
   let uid = idx.uid_rw uid in
@@ -200,6 +196,7 @@ module type UID = sig
   val compare : t -> t -> int
   val length : int
   val to_raw_string : t -> string
+  val pp : t Fmt.t
 end
 
 module N (Uid : UID): sig
@@ -219,6 +216,7 @@ end = struct
   type encoder =
     { dst : dst
     ; mutable o : bigstring
+    ; mutable o_off : int
     ; mutable o_pos : int
     ; mutable o_max : int
     ; t : bigstring
@@ -234,30 +232,30 @@ end = struct
   let dst e s j l =
     if (j < 0 || l < 0 || j + l > Bigstringaf.length s)
     then Fmt.invalid_arg "Out of bounds (off: %d, len: %d)" j l ;
-    e.o <- s ; e.o_pos <- j ; e.o_max <- j + l - 1
+    e.o <- s ; e.o_off <- j ; e.o_pos <- j ; e.o_max <- j + l - 1
 
   let partial k e = function `Await -> k e
 
   let flush_with_ctx k e = match e.dst with
     | `Manual ->
-      let ctx = Uid.feed e.ctx ~off:0 ~len:e.o_pos e.o in
+      let ctx = Uid.feed e.ctx ~off:e.o_off ~len:e.o_pos e.o in
       e.ctx <- ctx ; e.k <- partial k ; `Partial
     | `Channel oc ->
       let raw = Bigstringaf.substring e.o ~off:0 ~len:e.o_pos in
-      let ctx = Uid.feed e.ctx ~off:0 ~len:e.o_pos e.o in
+      let ctx = Uid.feed e.ctx ~off:e.o_off ~len:e.o_pos e.o in
       output_string oc raw ; e.o_pos <- 0 ; e.ctx <- ctx ; k e
     | `Buffer b ->
       let raw = Bigstringaf.substring e.o ~off:0 ~len:e.o_pos in
-      let ctx = Uid.feed e.ctx ~off:0 ~len:e.o_pos e.o in
+      let ctx = Uid.feed e.ctx ~off:e.o_off ~len:e.o_pos e.o in
       Buffer.add_string b raw ; e.o_pos <- 0 ; e.ctx <- ctx ; k e
 
   let flush_without_ctx k e = match e.dst with
     | `Manual -> e.k <- partial k ; `Partial
     | `Channel oc ->
-      let raw = Bigstringaf.substring e.o ~off:0 ~len:e.o_pos in
+      let raw = Bigstringaf.substring e.o ~off:e.o_off ~len:e.o_pos in
       output_string oc raw ; e.o_pos <- 0 ; k e
     | `Buffer b ->
-      let raw = Bigstringaf.substring e.o ~off:0 ~len:e.o_pos in
+      let raw = Bigstringaf.substring e.o ~off:e.o_off ~len:e.o_pos in
       Buffer.add_string b raw ; e.o_pos <- 0 ; k e
 
   let o_rem e = e.o_max - e.o_pos + 1
@@ -350,7 +348,10 @@ end = struct
   let rec encode_fanout e `Await =
     let k e =
       if e.n + 1 == 256
-      then ( e.n <- 0 ; encode_hash e `Await )
+      then ( e.n <- 0
+           ; if Array.length e.index > 0
+             then encode_hash e `Await
+             else encode_trail e `Await )
       else ( e.n <- succ e.n
            ; encode_fanout e `Await ) in
     let rem = o_rem e in
@@ -385,7 +386,7 @@ end = struct
       | `Buffer _
       | `Channel _ -> Bigstringaf.create io_buffer_size, 0, io_buffer_size - 1 in
     { dst
-    ; o; o_pos; o_max
+    ; o; o_off= 0; o_pos; o_max
     ; t= Bigstringaf.create Uid.length
     ; t_pos= 1
     ; t_max= 0

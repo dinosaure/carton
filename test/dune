@@ -1,0 +1,8 @@
+(executable
+ (name test)
+ (libraries mmap unix threads carton alcotest))
+
+(alias
+ (name runtest)
+ (deps (:test test.exe))
+ (action (run %{test} --color=always)))

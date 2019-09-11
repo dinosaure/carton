@@ -41,7 +41,7 @@ module Fp (Uid : UID) : sig
     ; consumed : int
     ; crc : optint }
 
-  val check_header : 's scheduler -> ('fd, 's) read -> 'fd -> (int, 's) io
+  val check_header : 's scheduler -> ('fd, 's) read -> 'fd -> (int * string, 's) io
 
   type decoder
 
@@ -54,12 +54,19 @@ module Fp (Uid : UID) : sig
     | `End of Uid.t
     | `Malformed of string ]
 
+  type header =
+    | Consumed of Bigstringaf.t
+    | None
+
   val decoder : o:Bigstringaf.t -> allocate:(int -> Dd.window) -> src -> decoder
   val decode : decoder -> decode
 
   val number : decoder -> int
   val version : decoder -> int
   val count : decoder -> int
+
+  val src_rem : decoder -> int
+  val src : decoder -> Bigstringaf.t -> int -> int -> decoder
 end
 
 type ('fd, 'uid) t

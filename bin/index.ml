@@ -48,7 +48,7 @@ let first_pass ~digest fpath =
   let zw = Dd.make_window ~bits:15 in
   let allocate _ = zw in
 
-  let max = Us.prj (Fp.check_header unix unix_read ic) in
+  let max, _ = Us.prj (Fp.check_header unix unix_read ic) in
   seek_in ic 0 ;
   max_indexation := max ;
 

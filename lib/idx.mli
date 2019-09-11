@@ -25,6 +25,7 @@ module type UID = sig
   val compare : t -> t -> int
   val length : int
   val to_raw_string : t -> string
+  val pp : t Fmt.t
 end
 
 module N (Uid : UID) : sig

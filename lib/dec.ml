@@ -73,6 +73,7 @@ module Fp (Uid : UID) = struct
   let count { c; _ } = c
 
   let is_inflate = function Inflate _ -> true | _ -> false
+  let src_rem = i_rem
 
   let eoi d = { d with i= Bigstringaf.empty
                     ; i_pos= 0
@@ -129,7 +130,14 @@ module Fp (Uid : UID) = struct
     if rem < 0 then malformedf "Unexpected end of input"
     else
       let need = d.t_need - d.t_len in
-      if rem < need
+
+      (* XXX(dinosaure): in the [`Manual] case, [i_pos = 1] and [blit] will fail where
+         offset with an empty buffer raises an exception. We protect it by [rem = 0] and
+         directly ask to refill inputs. *)
+
+      if rem = 0
+      then refill (t_fill k) d
+      else if rem < need
       then let d = blit d rem in refill (t_fill k) d
       else let d = blit d need in k { d with t_need= 0 }
 
@@ -154,7 +162,7 @@ module Fp (Uid : UID) = struct
     else fun buf off -> swap32 (get_int32 buf off)
 
   let check_header
-    : type fd s. s scheduler -> (fd, s) read -> fd -> (int, s) io
+    : type fd s. s scheduler -> (fd, s) read -> fd -> (int * string, s) io
     = fun { bind; return; } read fd ->
       let ( >>= ) = bind in
       let tmp = Bytes.create 12 in
@@ -165,7 +173,7 @@ module Fp (Uid : UID) = struct
       let n = get_int32_be tmp 8 in
       if h <> 0x5041434bl then Fmt.invalid_arg "Invalid PACK file (header: %lx <> %lx)" h 0x5041434bl ;
       if v <> 0x2l then Fmt.invalid_arg "Invalid version of PACK file" ;
-      return (Int32.to_int n)
+      return (Int32.to_int n, Bytes.unsafe_to_string tmp)
 
   let rec decode d = match d.s with
     | Header ->
@@ -322,6 +330,8 @@ module Fp (Uid : UID) = struct
         else malformedf "Unexpected hash: %a <> %a"
             Uid.pp expect Uid.pp have in
       refill_uid k d
+
+  type header = Consumed of Bigstringaf.t | None
 
   let decoder ~o ~allocate src =
     let i, i_pos, i_len = match src with
