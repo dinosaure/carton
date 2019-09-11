@@ -153,7 +153,7 @@ let find idx hash =
     let crc = get_int32_be idx.mp (crcs_offset + (n * 4)) in
     let off = get_int32_be idx.mp (values_offset + (n * 4)) in
 
-    Some (Optint.of_int32 crc, Int32.to_int off)
+    Some (Optint.of_int32 crc, Int64.of_int32 off)
   | exception Not_found ->
     Fmt.epr "%a not found.\n%!" Digestif.SHA1.pp (Obj.magic hash) ;
     None
@@ -171,7 +171,7 @@ let get_uid idx n =
 
 let get_offset idx n =
   let values_offset = 8 + (256 * 4) + (idx.n * idx.uid_ln) + (idx.n * 4) in
-  Int32.to_int (get_int32_be idx.mp (values_offset + (n * 4)))
+  Int64.of_int32 (get_int32_be idx.mp (values_offset + (n * 4)))
 
 let get_crc idx n =
   let crcs_offset = 8 + (256 * 4) + (idx.n * idx.uid_ln) in
@@ -205,7 +205,7 @@ end
 module N (Uid : UID): sig
   type encoder
 
-  type entry = { crc : optint; offset : int; uid : Uid.t }
+  type entry = { crc : optint; offset : int64; uid : Uid.t }
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
   val encoder : dst -> pack:Uid.t -> entry array -> encoder
@@ -213,7 +213,7 @@ module N (Uid : UID): sig
   val dst_rem : encoder -> int
   val dst : encoder -> Bigstringaf.t -> int -> int -> unit
 end = struct
-  type entry = { crc : optint; offset : int; uid : Uid.t }
+  type entry = { crc : optint; offset : int64; uid : Uid.t }
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
   type encoder =
@@ -311,7 +311,7 @@ end = struct
       then ( t_range e 3 ; e.t, 0, t_flush k )
       else let j = e.o_pos in ( e.o_pos <- e.o_pos + 4 ; e.o, j, k ) in
     let { offset; _ } = e.index.(e.n) in
-    Bigstringaf.set_int32_be s j (Int32.of_int offset) ;
+    Bigstringaf.set_int32_be s j (Int64.to_int32 offset) ;
     k e
 
   let rec encode_crc e `Await =

@@ -4,14 +4,14 @@ type 'uid idx
 type optint = Optint.t
 
 val make : bigstring -> uid_ln:int -> uid_rw:('uid -> string) -> uid_wr:(string -> 'uid) -> 'uid idx
-val find : 'uid idx -> 'uid -> (optint * int) option
-val iter : f:(uid:'uid -> offset:int -> crc:optint -> unit) -> 'uid idx -> unit
+val find : 'uid idx -> 'uid -> (optint * int64) option
+val iter : f:(uid:'uid -> offset:int64 -> crc:optint -> unit) -> 'uid idx -> unit
 val exists : 'uid idx -> 'uid -> bool
 
 val max : 'uid idx -> int
 
 val get_uid : 'uid idx -> int -> 'uid
-val get_offset : 'uid idx -> int -> int
+val get_offset : 'uid idx -> int -> int64
 val get_crc : 'uid idx -> int -> optint
 
 module type UID = sig
@@ -30,7 +30,7 @@ end
 module N (Uid : UID) : sig
   type encoder
 
-  type entry = { crc : optint; offset : int; uid : Uid.t }
+  type entry = { crc : optint; offset : int64; uid : Uid.t }
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
   val encoder : dst -> pack:Uid.t -> entry array -> encoder

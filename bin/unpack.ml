@@ -99,7 +99,7 @@ type nonsense = |
 
 let unpack_with_idx ~digest:_ threads fformat lru idx fpath =
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
-  let mx = let ic = Unix.in_channel_of_descr fd in in_channel_length ic in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
   let pack =
     Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
       (fun uid -> match Carton.Dec.Idx.find idx uid with
@@ -149,9 +149,7 @@ let unpack_without_idx ~digest threads fformat fpath =
   let open Rresult.R in
   Verify.first_pass ~digest fpath >>= fun (oracle, matrix, _, _, _) ->
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
-  let mx =
-    let ic = Unix.in_channel_of_descr fd in
-    in_channel_length ic in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
   let index uid = raise (Not_found uid) in
   let t = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 

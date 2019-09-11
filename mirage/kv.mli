@@ -2,7 +2,7 @@ module type MEMORY = sig
   type t
   type 'a fiber
 
-  val map : t -> pos:int -> int -> Bigstringaf.t fiber
+  val map : t -> pos:int64 -> int -> Bigstringaf.t fiber
   val disconnect : t -> unit fiber
 end
 

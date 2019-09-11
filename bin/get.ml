@@ -40,7 +40,7 @@ let idx_of_pack fpath =
 let of_off ~hex ~hxd off fpath =
   let open Rresult.R in
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
-  let mx = let ic = Unix.in_channel_of_descr fd in in_channel_length ic in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
   idx_of_pack fpath >>= fun (close_idx, idx) ->
   let pack = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string idx in
 
@@ -70,7 +70,7 @@ let of_uid ~hex ~hxd uid fpath =
 
   let fpath = Fpath.set_ext "pack" fpath in
   let fd1 = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
-  let mx1 = let ic = Unix.in_channel_of_descr fd1 in in_channel_length ic in
+  let mx1 = let st = Unix.LargeFile.fstat fd1 in st.Unix.LargeFile.st_size in
   let pck = Carton.Dec.make { fd= fd1; mx= mx1; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
       (fun uid -> match Carton.Dec.Idx.find idx uid with
          | Some (_, offset) -> offset
@@ -118,14 +118,14 @@ let existing_fpath ~ext =
   Arg.conv (parser, pp)
 
 let uid_or_offset =
-  let parser x = match int_of_string x with
+  let parser x = match Int64.of_string x with
     | v -> Ok (`Ofs v)
     | exception (Failure _) -> match Uid.of_hex x with
       | v -> Ok (`Ref v)
       | exception (Invalid_argument _) -> Rresult.R.error_msgf "Invalid value %S" x in
   let pp ppf = function
     | `Ref v -> Uid.pp ppf v
-    | `Ofs v -> Fmt.int ppf v in
+    | `Ofs v -> Fmt.int64 ppf v in
   Arg.conv (parser, pp)
 
 let pack =

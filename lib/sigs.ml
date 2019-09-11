@@ -1,4 +1,4 @@
-module type FUNCTOR = sig type 'a t end
+module type FUNCTOR = sig type +'a t end
 
 type (+'a, 's) io
 

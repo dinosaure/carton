@@ -2,7 +2,7 @@ module type MEMORY = sig
   type t
   type 'a fiber
 
-  val map : t -> pos:int -> int -> Bigstringaf.t fiber
+  val map : t -> pos:int64 -> int -> Bigstringaf.t fiber
   val disconnect : t -> unit fiber
 end
 
@@ -18,6 +18,12 @@ module type OBJECT = sig
   val is : [ `A | `B | `C | `D ] -> [ `Dictionary | `Value ]
   val iter : t -> ((string * [ `Value | `Dictionary ]) list, error) result
 end
+
+type ('fd, 'uid) t =
+  { pack : ('fd, 'uid) Carton.Dec.t
+  ; idx : 'uid Carton.Dec.Idx.idx
+  ; fd_idx : 'fd
+  ; mp_idx : Bigstringaf.t }
 
 module Make
     (Uid : Carton.UID)
@@ -36,12 +42,7 @@ module Make
 
   type 'a io = 'a IO.t
 
-  type t =
-    { pack : (Memory.t, Uid.t) Carton.Dec.t
-    ; idx : Uid.t Carton.Dec.Idx.idx
-    ; fd_idx : Memory.t
-    ; mp_idx : Bigstringaf.t }
-
+  type nonrec t = (Memory.t, Uid.t) t
   type key = Mirage_kv.Key.t
   type value = Object.t
   type error = Mirage_kv.error

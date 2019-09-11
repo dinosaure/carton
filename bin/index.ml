@@ -72,10 +72,10 @@ let first_pass ~digest fpath =
       succ_indexation () ;
       incr max_delta ;
       go decoder
-    | `Entry ({ Fp.kind= Ofs { sub; source; target; }
+    | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
               ; offset; crc; _ }, decoder) ->
       let n = Fp.count decoder - 1 in
-      Hashtbl.add weight (offset - sub) source ;
+      Hashtbl.add weight Int64.(sub offset (of_int s)) source ;
       Hashtbl.add weight offset target ;
       Hashtbl.add checks offset crc ;
       Hashtbl.add where offset n ;
@@ -83,10 +83,10 @@ let first_pass ~digest fpath =
       succ_indexation () ;
       incr max_delta ;
 
-      ( try let v = Hashtbl.find children (`Ofs (offset - sub)) in
-          Hashtbl.add children (`Ofs (offset - sub)) (offset :: v)
+      ( try let v = Hashtbl.find children (`Ofs Int64.(sub offset (of_int s))) in
+          Hashtbl.add children (`Ofs Int64.(sub offset (Int64.of_int s))) (offset :: v)
         with Not_found ->
-          Hashtbl.add children (`Ofs (offset - sub)) [ offset ] ) ;
+          Hashtbl.add children (`Ofs Int64.(sub offset (Int64.of_int s))) [ offset ] ) ;
       go decoder
     | `Entry _ -> assert false (* OBJ_REF *)
     | `End uid -> end_indexation () ; close_in ic ; Ok uid
@@ -98,7 +98,7 @@ let first_pass ~digest fpath =
         ; children= (fun ~cursor ~uid ->
               match Hashtbl.find_opt children (`Ofs cursor),
                     Hashtbl.find_opt children (`Ref uid) with
-              | Some a, Some b -> List.sort_uniq (compare : int -> int -> int) (a @ b)
+              | Some a, Some b -> List.sort_uniq compare (a @ b)
               | Some x, None | None, Some x -> x
               | None, None -> [])
         ; digest= (fun ~kind ?off ?len buf -> succ_delta () ; digest ~kind ?off ?len buf)
@@ -124,8 +124,8 @@ let index ~digest threads v output fpath =
   first_pass ~digest fpath >>= fun (oracle, matrix, where, checks, pack) ->
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
   let mx =
-    let ic = Unix.in_channel_of_descr fd in
-    in_channel_length ic in
+    let st = Unix.LargeFile.fstat fd in
+    st.Unix.LargeFile.st_size in
   let index _ = raise Not_found in
   let t = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 
@@ -134,7 +134,7 @@ let index ~digest threads v output fpath =
 
   let offsets =
     Hashtbl.fold (fun k _ a -> k :: a) where []
-    |> List.sort (Stdlib.compare : int -> int -> int)
+    |> List.sort Stdlib.compare
     |> Array.of_list in
   let matrix = zip offsets matrix in
   let entries =

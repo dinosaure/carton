@@ -11,6 +11,8 @@ let zip a b =
   if Array.length a <> Array.length b then Fmt.invalid_arg "Array.zip" ;
   Array.init (Array.length a) (fun i -> a.(i), b.(i))
 
+let () = Printexc.record_backtrace true
+
 let pp_kind ppf = function
   | `A -> Fmt.string ppf "a"
   | `B -> Fmt.string ppf "b"
@@ -49,19 +51,19 @@ let first_pass ~digest fpath =
       Hashtbl.add where offset n ;
       matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
       go decoder
-    | `Entry ({ Fp.kind= Ofs { sub; source; target; }
+    | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
               ; offset; size; consumed; _ }, decoder) ->
       let n = Fp.count decoder - 1 in
-      Hashtbl.add weight (offset - sub) source ;
+      Hashtbl.add weight Int64.(sub offset (Int64.of_int s)) source ;
       Hashtbl.add weight offset target ;
       Hashtbl.add length offset size ;
       Hashtbl.add carbon offset consumed ;
       Hashtbl.add where offset n ;
 
-      ( try let v = Hashtbl.find children (`Ofs (offset - sub)) in
-          Hashtbl.add children (`Ofs (offset - sub)) (offset :: v)
+      ( try let v = Hashtbl.find children (`Ofs Int64.(sub offset (Int64.of_int s))) in
+          Hashtbl.add children (`Ofs Int64.(sub offset (Int64.of_int s))) (offset :: v)
         with Not_found ->
-          Hashtbl.add children (`Ofs (offset - sub)) [ offset ] ) ;
+          Hashtbl.add children (`Ofs Int64.(sub offset (Int64.of_int s))) [ offset ] ) ;
       go decoder
     | `Entry _ -> assert false (* OBJ_REF *)
     | `End _ -> close_in ic ; Ok ()
@@ -73,7 +75,7 @@ let first_pass ~digest fpath =
         ; children= (fun ~cursor ~uid ->
               match Hashtbl.find_opt children (`Ofs cursor),
                     Hashtbl.find_opt children (`Ref uid) with
-              | Some a, Some b -> List.sort_uniq (compare : int -> int -> int) (a @ b)
+              | Some a, Some b -> List.sort_uniq compare (a @ b)
               | Some x, None | None, Some x -> x
               | None, None -> [])
         ; digest= digest
@@ -82,7 +84,7 @@ let first_pass ~digest fpath =
 
 exception Invalid_pack
 
-let print matrix (length : (int, Carton.Dec.weight) Hashtbl.t) carbon =
+let print matrix (length : (int64, Carton.Dec.weight) Hashtbl.t) carbon =
   Array.iter
     (fun (offset, s) ->
        let uid = Verify.uid_of_status s in
@@ -91,7 +93,7 @@ let print matrix (length : (int, Carton.Dec.weight) Hashtbl.t) carbon =
        let consumed = Hashtbl.find carbon offset in
        let prev = Verify.depth_of_status s, Verify.source_of_status s in
 
-       Fmt.pr "%a %a %d %d %d%a\n%!"
+       Fmt.pr "%a %a %d %d %Ld%a\n%!"
          Uid.pp uid pp_kind kind (size :> int) consumed offset
          pp_prev prev)
     matrix
@@ -100,9 +102,7 @@ let verify ~digest threads verbose idx fpath =
   let open Rresult.R in
   first_pass ~digest fpath >>= fun (oracle, matrix, where, length, carbon) ->
   let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
-  let mx =
-    let ic = Unix.in_channel_of_descr fd in
-    in_channel_length ic in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
   let index _ = raise Not_found in
   let t = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
 
@@ -110,7 +110,7 @@ let verify ~digest threads verbose idx fpath =
 
   let offsets =
     Hashtbl.fold (fun k _ a -> k :: a) where []
-    |> List.sort (Stdlib.compare : int -> int -> int)
+    |> List.sort Stdlib.compare
     |> Array.of_list in
   let matrix = zip offsets matrix in
 
@@ -121,7 +121,7 @@ let verify ~digest threads verbose idx fpath =
 
          match Carton.Dec.Idx.find idx uid with
          | Some (_, offset') ->
-           if offset != offset' then raise Invalid_pack ;
+           if offset <> offset' then raise Invalid_pack ;
          | None -> raise Invalid_pack)
       matrix ; if verbose then print matrix length carbon ; Unix.close fd ; Ok ()
   with Invalid_pack -> Error `Invalid_pack

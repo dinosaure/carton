@@ -33,13 +33,13 @@ let unix =
   { Carton.bind= (fun x f -> f (Us.prj x))
   ; Carton.return= (fun x -> Us.inj x) }
 
-type fd = { fd : Unix.file_descr; mx : int; }
+type fd = { fd : Unix.file_descr; mx : int64; }
 
 let unix_map : (fd, Us.t) Carton.Dec.W.map =
   fun fd ~pos len ->
   let payload =
-    let len = min (fd.mx - pos) len in
-    Mmap.V1.map_file fd.fd ~pos:(Int64.of_int pos)
+    let len = min Int64.(to_int (sub fd.mx pos)) len in
+    Mmap.V1.map_file fd.fd ~pos:pos
       Bigarray.char Bigarray.c_layout false [| len |] in
   Us.inj (Bigarray.array1_of_genarray payload)
 

@@ -4,10 +4,10 @@ module W : sig
   type 'fd t
 
   and slice =
-    { offset : int
+    { offset : int64
     ; length : int
     ; payload : Bigstringaf.t }
-  and ('fd, 's) map = 'fd -> pos:int -> int -> (Bigstringaf.t, 's) io
+  and ('fd, 's) map = 'fd -> pos:int64 -> int -> (Bigstringaf.t, 's) io
 
   val make : 'fd -> 'fd t
 end
@@ -35,7 +35,7 @@ module Fp (Uid : UID) : sig
     | Ref of { ptr : Uid.t; source : int; target : int; }
 
   type entry =
-    { offset : int
+    { offset : int64
     ; kind : kind
     ; size : weight
     ; consumed : int
@@ -87,7 +87,7 @@ val raw : v -> Bigstringaf.t
 val len : v -> int
 val depth : v -> int
 
-val make : 'fd -> z:Zz.bigstring -> allocate:(int -> Zz.window) -> uid_ln:int -> uid_rw:(string -> 'uid) -> ('uid -> int) -> ('fd, 'uid) t
+val make : 'fd -> z:Zz.bigstring -> allocate:(int -> Zz.window) -> uid_ln:int -> uid_rw:(string -> 'uid) -> ('uid -> int64) -> ('fd, 'uid) t
 (** [make fd ~z ~allocate ~uid_ln ~uid_rw where] returns a state associated to
    [fd] which is the user-defined representation of a [Carton] file. Some
    informations are needed:
@@ -110,40 +110,40 @@ val make : 'fd -> z:Zz.bigstring -> allocate:(int -> Zz.window) -> uid_ln:int ->
 
 (** {3 Weight of object.} *)
 
-val weight_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> cursor:int -> (weight, 's) io
+val weight_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> cursor:int64 -> (weight, 's) io
 val weight_of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> 'uid -> (weight, 's) io
 
 (** {3 Value of object.} *)
 
-val of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> raw -> cursor:int -> (v, 's) io
+val of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> raw -> cursor:int64 -> (v, 's) io
 val of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> raw -> 'uid -> (v, 's) io
 
 (** {3 Path of object.} *)
 
 type path
 
-val path_to_list : path -> int list
+val path_to_list : path -> int64 list
 val kind_of_path : path -> [ `A | `B | `C | `D ]
 
-val path_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> cursor:int -> (path, 's) io
+val path_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> cursor:int64 -> (path, 's) io
 val path_of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> 'uid -> (path, 's) io
-val of_offset_with_path : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> path:path -> raw -> cursor:int -> (v, 's) io
+val of_offset_with_path : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> path:path -> raw -> cursor:int64 -> (v, 's) io
 
 (** {3 Uid of object.} *)
 
 type 'uid digest = kind:kind -> ?off:int -> ?len:int -> Bigstringaf.t -> 'uid
 
-val uid_of_offset : 's scheduler -> map:('fd, 's) W.map -> digest:'uid digest -> ('fd, 'uid) t -> raw -> cursor:int -> (kind * 'uid, 's) io
-val uid_of_offset_with_source : 's scheduler -> map:('fd, 's) W.map -> digest:'uid digest -> ('fd, 'uid) t -> kind:kind -> raw -> depth:int -> cursor:int -> ('uid, 's) io
+val uid_of_offset : 's scheduler -> map:('fd, 's) W.map -> digest:'uid digest -> ('fd, 'uid) t -> raw -> cursor:int64 -> (kind * 'uid, 's) io
+val uid_of_offset_with_source : 's scheduler -> map:('fd, 's) W.map -> digest:'uid digest -> ('fd, 'uid) t -> kind:kind -> raw -> depth:int -> cursor:int64 -> ('uid, 's) io
 
-type 'uid children = cursor:int -> uid:'uid -> int list
-type where = cursor:int -> int
+type 'uid children = cursor:int64 -> uid:'uid -> int64 list
+type where = cursor:int64 -> int
 
 type 'uid oracle =
   { digest : 'uid digest
   ; children : 'uid children
   ; where : where
-  ; weight : cursor:int -> weight }
+  ; weight : cursor:int64 -> weight }
 
 module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) : sig
   val s : Scheduler.t scheduler
@@ -155,12 +155,12 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
   val depth_of_status : status -> int
   val source_of_status : status -> Uid.t option
 
-  val unresolved_base : cursor:int -> status
+  val unresolved_base : cursor:int64 -> status
   val unresolved_node : status
 
   val verify : threads:int -> map:('fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> ('fd, Uid.t) t -> matrix:status array -> unit IO.t
 end
 
 module Ip (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID): sig
-  val iter : threads:'a list -> f:('a -> uid:Uid.t -> offset:int -> crc:Idx.optint -> unit IO.t) -> Uid.t Idx.idx -> unit IO.t
+  val iter : threads:'a list -> f:('a -> uid:Uid.t -> offset:int64 -> crc:Idx.optint -> unit IO.t) -> Uid.t Idx.idx -> unit IO.t
 end
