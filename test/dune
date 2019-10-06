@@ -4,5 +4,5 @@
 
 (alias
  (name runtest)
- (deps (:test test.exe))
+ (deps (:test test.exe) bomb.pack)
  (action (run %{test} --color=always)))
