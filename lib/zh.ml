@@ -13,10 +13,10 @@ module N : sig
   type ret = [ `Flush of encoder | `End ]
 
   val dst_rem : encoder -> int
-  val dst : encoder -> Zz.bigstring -> int -> int -> encoder
+  val dst : encoder -> Zl.bigstring -> int -> int -> encoder
 
   val encode : encoder -> ret
-  val encoder : i:Zz.bigstring -> q:Dd.B.t -> w:Zz.window -> source:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
+  val encoder : i:Zl.bigstring -> q:De.Queue.t -> w:Zl.window -> source:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
 end = struct
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
@@ -27,8 +27,8 @@ end = struct
     ; o_pos : int
     ; o_max : int
     ; h : H.N.encoder
-    ; z : Zz.N.encoder
-    ; t : Zz.bigstring
+    ; z : Zl.Def.encoder
+    ; t : Zl.bigstring
     ; d : [ `Copy of (int * int) | `Insert of string | `End | `Await ] list }
 
   type ret = [ `Flush of encoder | `End ]
@@ -42,24 +42,24 @@ end = struct
       do Buffer.add_char b (Bigstringaf.get e.o i) done ;
       k { e with o_pos= 0 }
 
-  let rec encode_z e = match Zz.N.encode e.z with
+  let rec encode_z e = match Zl.Def.encode e.z with
     | `End z ->
-      let len = Bigstringaf.length e.o - Zz.N.dst_rem z in
-      let z = Zz.N.dst z Dd.bigstring_empty 0 0 in
+      let len = Bigstringaf.length e.o - Zl.Def.dst_rem z in
+      let z = Zl.Def.dst z De.bigstring_empty 0 0 in
 
       if len > 0
       then flush encode_z { e with z; o_pos= len }
       else `End
     | `Flush z ->
-      let len = Bigstringaf.length e.o - Zz.N.dst_rem z in
+      let len = Bigstringaf.length e.o - Zl.Def.dst_rem z in
       flush encode_z { e with z; o_pos= len }
     | `Await z ->
       match e.d with
       | [] ->
-        let z = Zz.N.src z Dd.bigstring_empty 0 0 in
+        let z = Zl.Def.src z De.bigstring_empty 0 0 in
         encode_z { e with z }
       | d ->
-        H.N.dst e.h e.t 0 (Dd.bigstring_length e.t) ; encode_h e d
+        H.N.dst e.h e.t 0 (De.bigstring_length e.t) ; encode_h e d
 
   and encode_h e d =
     let v, d = match d with
@@ -68,14 +68,14 @@ end = struct
     match H.N.encode e.h v, d with
     | `Ok, [] ->
       let len = Bigstringaf.length e.t - H.N.dst_rem e.h in
-      let z = Zz.N.src e.z e.t 0 len in
+      let z = Zl.Def.src e.z e.t 0 len in
 
       encode_z { e with d; z }
     | `Ok, d ->
       encode_h { e with d } d
     | `Partial, d ->
       let len = Bigstringaf.length e.t - H.N.dst_rem e.h in
-      let z = Zz.N.src e.z e.t 0 len in
+      let z = Zl.Def.src e.z e.t 0 len in
 
       encode_z { e with d= `Await :: d; z }
 
@@ -83,11 +83,11 @@ end = struct
 
   let encoder ~i ~q ~w ~source src dst hunks =
     let o, o_pos, o_max = match dst with
-      | `Manual -> Dd.bigstring_empty, 1, 0
+      | `Manual -> De.bigstring_empty, 1, 0
       | `Buffer _
-      | `Channel _ -> Dd.bigstring_create H.io_buffer_size, 0, H.io_buffer_size - 1 in
-    let z = Zz.N.encoder `Manual `Manual ~q ~w ~level:0 in
-    let z = Zz.N.dst z Dd.bigstring_empty 0 0 in
+      | `Channel _ -> De.bigstring_create H.io_buffer_size, 0, H.io_buffer_size - 1 in
+    let z = Zl.Def.encoder `Manual `Manual ~q ~w ~level:0 in
+    let z = Zl.Def.dst z De.bigstring_empty 0 0 in
     { dst
     ; src
     ; o; o_pos; o_max
@@ -99,7 +99,7 @@ end = struct
   let dst_rem e = e.o_max - e.o_pos + 1
 
   let dst e s j l =
-    let z = Zz.N.dst e.z s j l in
+    let z = Zl.Def.dst e.z s j l in
     { e with z; o= s; o_pos= j; o_max= j + l - 1 }
 end
 
@@ -114,11 +114,11 @@ module M : sig
   val src_rem : decoder -> int
   val dst_rem : decoder -> int
 
-  val src : decoder -> Zz.bigstring -> int -> int -> decoder
+  val src : decoder -> Zl.bigstring -> int -> int -> decoder
   val dst : decoder -> H.bigstring -> int -> int -> decoder
   val source : decoder -> H.bigstring -> decoder
   val decode : decoder -> decode
-  val decoder : ?source:H.bigstring -> o:Zz.bigstring -> allocate:(int -> Zz.window) -> src -> decoder
+  val decoder : ?source:H.bigstring -> o:Zl.bigstring -> allocate:(int -> Zl.window) -> src -> decoder
 end = struct
   type src = [ `Channel of in_channel | `String of string | `Manual ]
 
@@ -127,11 +127,11 @@ end = struct
     ; dst : H.bigstring
     ; dst_len : int
     ; src_len : int
-    ; i : Zz.bigstring
+    ; i : Zl.bigstring
     ; i_pos : int
     ; i_len : int
-    ; o : Zz.bigstring
-    ; z : Zz.M.decoder
+    ; o : Zl.bigstring
+    ; z : Zl.Inf.decoder
     ; h : H.M.decoder
     ; k : decoder -> decode }
   and decode = [ `Await of decoder
@@ -141,11 +141,11 @@ end = struct
 
   let refill k d = match d.src with
     | `String _ ->
-      let z = Zz.M.src d.z Dd.bigstring_empty 0 0 in
+      let z = Zl.Inf.src d.z De.bigstring_empty 0 0 in
       k { d with z }
     | `Channel ic ->
-      let res = input_bigstring ic d.i 0 (Dd.bigstring_length d.i) in
-      let z = Zz.M.src d.z d.i 0 res in
+      let res = input_bigstring ic d.i 0 (De.bigstring_length d.i) in
+      let z = Zl.Inf.src d.z d.i 0 res in
       k { d with z }
     | `Manual -> `Await { d with k }
 
@@ -156,22 +156,22 @@ end = struct
     | `End -> `End { d with k= decode }
     | `Malformed err -> `Malformed err
     | `Await ->
-      inflate { d with z= Zz.M.flush d.z }
+      inflate { d with z= Zl.Inf.flush d.z }
   and inflate d =
-    match Zz.M.decode d.z with
+    match Zl.Inf.decode d.z with
     | `Await z ->
-      let dst_len = Dd.bigstring_length d.o - Zz.M.dst_rem z in
+      let dst_len = De.bigstring_length d.o - Zl.Inf.dst_rem z in
       H.M.src d.h d.o 0 dst_len ; refill inflate { d with z }
     | `End z ->
-      let dst_len = Dd.bigstring_length d.o - Zz.M.dst_rem z in
+      let dst_len = De.bigstring_length d.o - Zl.Inf.dst_rem z in
       H.M.src d.h d.o 0 dst_len ; decode { d with z }
     | `Flush z ->
-      let dst_len = Dd.bigstring_length d.o - Zz.M.dst_rem z in
+      let dst_len = De.bigstring_length d.o - Zl.Inf.dst_rem z in
       H.M.src d.h d.o 0 dst_len ; decode { d with z }
     | `Malformed err -> `Malformed err
 
   let src d s j l =
-    let z = Zz.M.src d.z s j l in
+    let z = Zl.Inf.src d.z s j l in
     { d with z }
 
   let dst d s j l =
@@ -189,21 +189,21 @@ end = struct
     assert (d.src_len = src_len) ; src_len
 
   let dst_rem d = H.M.dst_rem d.h
-  let src_rem d = Zz.M.src_rem d.z
+  let src_rem d = Zl.Inf.src_rem d.z
 
   let decoder ?source ~o ~allocate src =
-    let decoder_z = Zz.M.decoder `Manual ~o ~allocate in
+    let decoder_z = Zl.Inf.decoder `Manual ~o ~allocate in
     let decoder_h = H.M.decoder `Manual ?source in
 
     let i, i_pos, i_len = match src with
-      | `Manual -> Dd.bigstring_empty, 1, 0
+      | `Manual -> De.bigstring_empty, 1, 0
       | `String x ->
         Bigstringaf.of_string x ~off:0 ~len:(String.length x),
         0, String.length x - 1
-      | `Channel _ -> Bigstringaf.create Dd.io_buffer_size, 1, 0 in
+      | `Channel _ -> Bigstringaf.create De.io_buffer_size, 1, 0 in
 
     { src
-    ; dst= Dd.bigstring_empty
+    ; dst= De.bigstring_empty
     ; dst_len= 0
     ; src_len= 0
     ; i

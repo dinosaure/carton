@@ -36,7 +36,7 @@ module Fp (Uid : UID) = struct
     ; t_need : int
     ; t_peek : int
     ; ctx : Uid.ctx
-    ; z : Zz.M.decoder
+    ; z : Zl.Inf.decoder
     ; k : decoder -> decode }
   and s =
     | Header | Entry | Inflate of entry | Hash
@@ -86,7 +86,7 @@ module Fp (Uid : UID) = struct
     then Fmt.invalid_arg "Source out of bounds" ;
     if (l == 0) then eoi d
     else
-      let z = if is_inflate d.s then Zz.M.src d.z s j l else d.z in
+      let z = if is_inflate d.s then Zl.Inf.src d.z s j l else d.z in
       { d with i= s
             ; i_pos= j
             ; i_len= j + l - 1
@@ -206,8 +206,8 @@ module Fp (Uid : UID) = struct
           base_offset := (!base_offset lsl 7) + (!c land 127) ;
         done ;
 
-        let z = Zz.M.reset d.z in
-        let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
+        let z = Zl.Inf.reset d.z in
+        let z = Zl.Inf.src z d.i !p (i_rem { d with i_pos= !p }) in
         let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) crc in
         let e = { offset; kind= Ofs { sub= !base_offset; source= (-1); target= (-1); }; size; consumed= 0; crc; } in
 
@@ -234,8 +234,8 @@ module Fp (Uid : UID) = struct
         match kind with
         | 0b000 | 0b101 -> malformedf "Invalid type"
         | 0b001 | 0b010 | 0b011 | 0b100 as kind ->
-          let z = Zz.M.reset d.z in
-          let z = Zz.M.src z d.i !p (i_rem { d with i_pos= !p }) in
+          let z = Zl.Inf.reset d.z in
+          let z = Zl.Inf.src z d.i !p (i_rem { d with i_pos= !p }) in
           let k = match kind with 0b001 -> `A | 0b010 -> `B | 0b011 -> `C | 0b100 -> `D | _ -> assert false in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) Checkseum.Crc32.default in
           let e = { offset= d.r; kind= Base k; size= !size; consumed= 0; crc; } in
@@ -253,20 +253,20 @@ module Fp (Uid : UID) = struct
         | _ -> assert false in
       peek_10 k_header d
     | Inflate ({ kind= Base _; crc; _ } as entry) ->
-      let rec go z = match Zz.M.decode z with
+      let rec go z = match Zl.Inf.decode z with
         | `Await z ->
-          let len = i_rem d - Zz.M.src_rem z in
+          let len = i_rem d - Zl.Inf.src_rem z in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
           refill decode { d with z; i_pos= d.i_pos + len; r= Int64.add d.r (Int64.of_int len)
                               ; s= Inflate { entry with crc }
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
         | `Flush z ->
-          go (Zz.M.flush z)
+          go (Zl.Inf.flush z)
         | `Malformed _ as err -> err
         | `End z ->
-          let len = i_rem d - Zz.M.src_rem z in
+          let len = i_rem d - Zl.Inf.src_rem z in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
-          let z = Zz.M.reset z in
+          let z = Zl.Inf.reset z in
           let decoder = { d with i_pos= d.i_pos + len; r= Int64.add d.r (Int64.of_int len)
                               ; z; s= if d.c == d.n then Hash else Entry
                               ; k= decode
@@ -279,9 +279,9 @@ module Fp (Uid : UID) = struct
       let target = ref (target entry) in
       let first = ref (!source = (-1) && !target = (-1)) in
 
-      let rec go z = match Zz.M.decode z with
+      let rec go z = match Zl.Inf.decode z with
         | `Await z ->
-          let len = i_rem d - Zz.M.src_rem z in
+          let len = i_rem d - Zl.Inf.src_rem z in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
           let entry = with_source !source entry in
           let entry = with_target !target entry in
@@ -290,23 +290,23 @@ module Fp (Uid : UID) = struct
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
         | `Flush z ->
           if !first
-          then ( let len = Bigstringaf.length d.o - Zz.M.dst_rem z in
+          then ( let len = Bigstringaf.length d.o - Zl.Inf.dst_rem z in
                 let x, src_len = variable_length d.o 0 len in
                 let _, dst_len = variable_length d.o x len in
                 source := src_len ; target := dst_len ; first := false ) ;
 
-          go (Zz.M.flush z)
+          go (Zl.Inf.flush z)
         | `Malformed _ as err -> err
         | `End z ->
           if !first
-          then ( let len = Bigstringaf.length d.o - Zz.M.dst_rem z in
+          then ( let len = Bigstringaf.length d.o - Zl.Inf.dst_rem z in
                 let x, src_len = variable_length d.o 0 len in
                 let _, dst_len = variable_length d.o x len in
                 source := src_len ; target := dst_len ; first := false ) ;
 
-          let len = i_rem d - Zz.M.src_rem z in
+          let len = i_rem d - Zl.Inf.src_rem z in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
-          let z = Zz.M.reset z in
+          let z = Zl.Inf.reset z in
           let decoder = { d with i_pos= d.i_pos + len; r= Int64.add d.r (Int64.of_int len)
                               ; z; s= if d.c == d.n then Hash else Entry
                               ; k= decode
@@ -337,7 +337,7 @@ module Fp (Uid : UID) = struct
     let i, i_pos, i_len = match src with
       | `Manual -> Bigstringaf.empty, 1, 0
       | `String x -> Bigstringaf.of_string x ~off:0 ~len:(String.length x), 0, String.length x - 1
-      | `Channel _ -> Bigstringaf.create Zz.io_buffer_size, 1, 0 in
+      | `Channel _ -> Bigstringaf.create Zl.io_buffer_size, 1, 0 in
     { src
     ; i; i_pos; i_len
     ; n= 0
@@ -351,7 +351,7 @@ module Fp (Uid : UID) = struct
     ; t_need= 0
     ; t_peek= 0
     ; ctx= Uid.empty
-    ; z= Zz.M.decoder `Manual ~o ~allocate
+    ; z= Zl.Inf.decoder `Manual ~o ~allocate
     ; k= decode }
 
   let decode d = d.k d
@@ -418,7 +418,7 @@ type ('fd, 'uid) t =
   ; uid_ln : int
   ; uid_rw : string -> 'uid
   ; tmp : Bigstringaf.t
-  ; allocate : int -> Zz.window }
+  ; allocate : int -> Zl.window }
 
 let with_z tmp t = { t with tmp }
 let with_w ws t = { t with ws }
@@ -426,7 +426,7 @@ let with_allocate ~allocate t = { t with allocate }
 let fd { ws= { W.fd; _ }; _ } = fd
 
 let make
-  : type fd uid. fd -> z:Bigstringaf.t -> allocate:(int -> Zz.window) -> uid_ln:int -> uid_rw:(string -> uid) -> (uid -> int64) -> (fd, uid) t
+  : type fd uid. fd -> z:Bigstringaf.t -> allocate:(int -> Zl.window) -> uid_ln:int -> uid_rw:(string -> uid) -> (uid -> int64) -> (fd, uid) t
   = fun fd ~z ~allocate ~uid_ln ~uid_rw where ->
     { ws= W.make fd
     ; fd= where
@@ -454,7 +454,7 @@ let weight_of_delta
       | `Await decoder ->
         W.load s ~map t.ws cursor >>= function
         | None ->
-          let decoder = Zh.M.src decoder Dd.bigstring_empty 0 0 in
+          let decoder = Zh.M.src decoder De.bigstring_empty 0 0 in
           (* XXX(dinosaure): End of stream, [Zh] should return [`Malformed] then. *)
           (go[@tailcall]) cursor decoder
         | Some slice ->
@@ -663,12 +663,12 @@ let uncompress
     let l = ref 0 in
     let p = ref false in
     let o = get_payload raw in
-    let decoder = Zz.M.decoder `Manual ~o ~allocate:t.allocate in
+    let decoder = Zl.Inf.decoder `Manual ~o ~allocate:t.allocate in
 
-    let rec go cursor decoder = match Zz.M.decode decoder with
+    let rec go cursor decoder = match Zl.Inf.decode decoder with
       | `Malformed err -> failwith err
       | `End decoder ->
-        let len = Bigstringaf.length o - Zz.M.dst_rem decoder in
+        let len = Bigstringaf.length o - Zl.Inf.dst_rem decoder in
         assert (!p || (not !p && len = 0)) ;
         (* XXX(dinosaure): we gave a [o] buffer which is enough to store
            inflated data. At the end, [decoder] should not return more than one
@@ -676,23 +676,23 @@ let uncompress
            appears and we reach [`End] directly, so [!p (still) = false and len (must) = 0]. *)
         return { kind; raw; len= !l; depth= 1; }
       | `Flush decoder ->
-        l := Bigstringaf.length o - Zz.M.dst_rem decoder ;
+        l := Bigstringaf.length o - Zl.Inf.dst_rem decoder ;
         assert (not !p) ; p := true ;
-        let decoder = Zz.M.flush decoder in
+        let decoder = Zl.Inf.flush decoder in
         (go[@tailcall]) cursor decoder
       | `Await decoder ->
         W.load s ~map t.ws cursor >>= function
         | Some slice ->
           let off = Int64.(to_int (sub cursor slice.W.offset)) in
           let len = slice.W.length - off in
-          let decoder = Zz.M.src decoder slice.W.payload off len in
+          let decoder = Zl.Inf.src decoder slice.W.payload off len in
           (go[@tailcall]) Int64.(add slice.W.offset (of_int slice.W.length)) decoder
         | None ->
-          let decoder = Zz.M.src decoder Bigstringaf.empty 0 0 in
+          let decoder = Zl.Inf.src decoder Bigstringaf.empty 0 0 in
           (go[@tailcall]) cursor decoder in
     let off = Int64.(to_int (sub cursor slice.W.offset)) in
     let len = slice.W.length - off in
-    let decoder = Zz.M.src decoder slice.W.payload off len in
+    let decoder = Zl.Inf.src decoder slice.W.payload off len in
     go Int64.(add slice.W.offset (of_int slice.W.length)) decoder
 
 let of_delta

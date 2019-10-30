@@ -4,8 +4,8 @@ open Core
 module Fp = Carton.Dec.Fp(Uid)
 module Verify = Carton.Dec.Verify(Uid)(Us)(IO)
 
-let z = Dd.bigstring_create Dd.io_buffer_size
-let allocate bits = Dd.make_window ~bits
+let z = De.bigstring_create De.io_buffer_size
+let allocate bits = De.make_window ~bits
 
 let zip a b =
   if Array.length a <> Array.length b then Fmt.invalid_arg "Array.zip" ;
@@ -25,7 +25,7 @@ let pp_prev ppf (depth, source) = match source with
 
 let first_pass ~digest fpath =
   let ic = open_in (Fpath.to_string fpath) in
-  let zw = Dd.make_window ~bits:15 in
+  let zw = De.make_window ~bits:15 in
   let allocate _ = zw in
 
   let max, _ = Us.prj (Fp.check_header unix unix_read ic) in

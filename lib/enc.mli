@@ -45,8 +45,8 @@ module N : sig
 
   type b =
     { i : Bigstringaf.t
-    ; q : Dd.B.t
-    ; w : Dd.window }
+    ; q : De.Queue.t
+    ; w : De.window }
 
   val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> 'uid q -> (encoder, 's) io
   val encode : o:Bigstringaf.t -> encoder -> [ `Flush of (encoder * int) | `End ]
@@ -55,8 +55,8 @@ end
 
 type b =
   { i : Bigstringaf.t
-  ; q : Dd.B.t
-  ; w : Dd.window
+  ; q : De.Queue.t
+  ; w : De.window
   ; o : Bigstringaf.t }
 
 val header_of_pack : length:int -> Bigstringaf.t -> int -> int -> unit

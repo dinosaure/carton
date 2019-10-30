@@ -4,10 +4,10 @@ module N : sig
   type ret = [ `Flush of encoder | `End ]
 
   val dst_rem : encoder -> int
-  val dst : encoder -> Zz.bigstring -> int -> int -> encoder
+  val dst : encoder -> Zl.bigstring -> int -> int -> encoder
 
   val encode : encoder -> ret
-  val encoder : i:Zz.bigstring -> q:Dd.B.t -> w:Zz.window -> source:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
+  val encoder : i:Zl.bigstring -> q:De.Queue.t -> w:Zl.window -> source:int -> H.bigstring -> dst -> Duff.hunk list -> encoder
 end
 
 module M : sig
@@ -21,9 +21,9 @@ module M : sig
   val src_rem : decoder -> int
   val dst_rem : decoder -> int
 
-  val src : decoder -> Zz.bigstring -> int -> int -> decoder
+  val src : decoder -> Zl.bigstring -> int -> int -> decoder
   val dst : decoder -> H.bigstring -> int -> int -> decoder
   val source : decoder -> H.bigstring -> decoder
   val decode : decoder -> decode
-  val decoder : ?source:H.bigstring -> o:Zz.bigstring -> allocate:(int -> Zz.window) -> src -> decoder
+  val decoder : ?source:H.bigstring -> o:Zl.bigstring -> allocate:(int -> Zl.window) -> src -> decoder
 end

@@ -1,8 +1,8 @@
 open Prelude
 open Core
 
-let z = Dd.bigstring_create Dd.io_buffer_size
-let allocate bits = Dd.make_window ~bits
+let z = De.bigstring_create De.io_buffer_size
+let allocate bits = De.make_window ~bits
 
 module Cache : sig
   type t

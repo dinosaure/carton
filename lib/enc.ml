@@ -318,8 +318,8 @@ module N : sig
 
   type b =
     { i : Bigstringaf.t
-    ; q : Dd.B.t
-    ; w : Dd.window }
+    ; q : De.Queue.t
+    ; w : De.window }
 
   val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> 'uid q -> (encoder, 's) io
   val encode : o:Bigstringaf.t -> encoder -> [ `Flush of (encoder * int) | `End ]
@@ -327,21 +327,21 @@ module N : sig
 end = struct
   type b =
     { i : Bigstringaf.t
-    ; q : Dd.B.t
-    ; w : Dd.window }
+    ; q : De.Queue.t
+    ; w : De.window }
 
   type encoder =
     | H of Zh.N.encoder
-    | Z of Zz.N.encoder
+    | Z of Zl.Def.encoder
 
-  let rec encode_zlib ~o encoder = match Zz.N.encode encoder with
+  let rec encode_zlib ~o encoder = match Zl.Def.encode encoder with
     | `Await encoder ->
-      encode_zlib ~o (Zz.N.src encoder Bigstringaf.empty 0 0)
+      encode_zlib ~o (Zl.Def.src encoder Bigstringaf.empty 0 0)
     | `Flush encoder ->
-      let len = Bigstringaf.length o - Zz.N.dst_rem encoder in
+      let len = Bigstringaf.length o - Zl.Def.dst_rem encoder in
       `Flush (encoder, len)
     | `End encoder ->
-      let len = Bigstringaf.length o - Zz.N.dst_rem encoder in
+      let len = Bigstringaf.length o - Zl.Def.dst_rem encoder in
       if len > 0
       then `Flush (encoder, len)
       else `End
@@ -363,7 +363,7 @@ end = struct
         | `End -> `End )
 
   let dst encoder s j l = match encoder with
-    | Z encoder -> let encoder = Zz.N.dst encoder s j l in Z encoder
+    | Z encoder -> let encoder = Zl.Def.dst encoder s j l in Z encoder
     | H encoder -> let encoder = Zh.N.dst encoder s j l in H encoder
 
   let encoder
@@ -384,8 +384,8 @@ end = struct
         return (H encoder)
       | None ->
         load_if target.v target.entry.uid >>= fun v ->
-        let encoder = Zz.N.encoder `Manual `Manual ~q:b.q ~w:b.w ~level:0 in
-        let encoder = Zz.N.src encoder (Dec.raw v) 0 (Dec.len v) in
+        let encoder = Zl.Def.encoder `Manual `Manual ~q:b.q ~w:b.w ~level:0 in
+        let encoder = Zl.Def.src encoder (Dec.raw v) 0 (Dec.len v) in
 
         return (Z encoder)
 end
@@ -394,8 +394,8 @@ type ('uid, 's) find = 'uid -> (int option, 's) io
 
 type b =
   { i : Bigstringaf.t
-  ; q : Dd.B.t
-  ; w : Dd.window
+  ; q : De.Queue.t
+  ; w : De.window
   ; o : Bigstringaf.t }
 
 let encode_header ~o kind length =

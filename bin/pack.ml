@@ -105,10 +105,10 @@ let pack ~digest ?threads ~root fformat output =
   let load = load entries in
 
   let b =
-    { Carton.Enc.o= Bigstringaf.create Dd.io_buffer_size
-    ; Carton.Enc.i= Bigstringaf.create Dd.io_buffer_size
-    ; Carton.Enc.q= Dd.B.create 0x10000
-    ; Carton.Enc.w= Dd.make_window ~bits:15 } in
+    { Carton.Enc.o= Bigstringaf.create De.io_buffer_size
+    ; Carton.Enc.i= Bigstringaf.create De.io_buffer_size
+    ; Carton.Enc.q= De.Queue.create 0x10000
+    ; Carton.Enc.w= De.make_window ~bits:15 } in
 
   max_targets := Array.length targets ;
   Carton.Enc.header_of_pack ~length:(Array.length targets) header 0 12 ;

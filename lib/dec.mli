@@ -58,7 +58,7 @@ module Fp (Uid : UID) : sig
     | Consumed of Bigstringaf.t
     | None
 
-  val decoder : o:Bigstringaf.t -> allocate:(int -> Dd.window) -> src -> decoder
+  val decoder : o:Bigstringaf.t -> allocate:(int -> De.window) -> src -> decoder
   val decode : decoder -> decode
 
   val number : decoder -> int
@@ -74,7 +74,7 @@ type ('fd, 'uid) t
 
 val with_z : Bigstringaf.t -> ('fd, 'uid) t -> ('fd, 'uid) t
 val with_w : 'fd W.t -> ('fd, 'uid) t -> ('fd, 'uid) t
-val with_allocate : allocate:(int -> Dd.window) -> ('fd, 'uid) t -> ('fd, 'uid) t
+val with_allocate : allocate:(int -> De.window) -> ('fd, 'uid) t -> ('fd, 'uid) t
 val fd : ('fd, 'uid) t -> 'fd
 
 type raw
@@ -94,7 +94,7 @@ val raw : v -> Bigstringaf.t
 val len : v -> int
 val depth : v -> int
 
-val make : 'fd -> z:Zz.bigstring -> allocate:(int -> Zz.window) -> uid_ln:int -> uid_rw:(string -> 'uid) -> ('uid -> int64) -> ('fd, 'uid) t
+val make : 'fd -> z:Zl.bigstring -> allocate:(int -> Zl.window) -> uid_ln:int -> uid_rw:(string -> 'uid) -> ('uid -> int64) -> ('fd, 'uid) t
 (** [make fd ~z ~allocate ~uid_ln ~uid_rw where] returns a state associated to
    [fd] which is the user-defined representation of a [Carton] file. Some
    informations are needed:

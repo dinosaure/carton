@@ -15,9 +15,9 @@ let optint = Alcotest.testable Optint.pp Optint.equal
 let sha1 = Alcotest.testable Digestif.SHA1.pp Digestif.SHA1.equal
 let s = Alcotest.testable (fun ppf x -> Fmt.pf ppf "%S" x) String.equal
 
-let z = Bigstringaf.create Dd.io_buffer_size
-let allocate bits = Dd.make_window ~bits
-let o = Bigstringaf.create Dd.io_buffer_size
+let z = Bigstringaf.create De.io_buffer_size
+let allocate bits = De.make_window ~bits
+let o = Bigstringaf.create De.io_buffer_size
 
 let test_empty_pack () =
   Alcotest.test_case "empty pack" `Quick @@ fun () ->
@@ -59,8 +59,8 @@ let valid_empty_pack () =
   Alcotest.test_case "valid empty pack" `Quick @@ fun () ->
   let fd, read = fd_and_read_of_bigstring_list [ empty_pack ] in
   let max, buf = Us.prj (Fp.check_header unix read fd) in
-  let tmp0 = Bytes.create Dd.io_buffer_size in
-  let tmp1 = Bigstringaf.create Dd.io_buffer_size in
+  let tmp0 = Bytes.create De.io_buffer_size in
+  let tmp1 = Bigstringaf.create De.io_buffer_size in
 
   let decoder = Fp.decoder ~o ~allocate `Manual in
   let decoder = Fp.src decoder (Bigstringaf.of_string buf ~off:0 ~len:(String.length buf)) 0 (String.length buf) in
@@ -202,7 +202,7 @@ let map { fd; mx; } ~pos len =
 let index_of_bomb_pack () =
   Alcotest.test_case "index of bomb pack" `Quick @@ fun () ->
   let o = Bigstringaf.create 0x1000 in
-  let allocate bits = Dd.make_window ~bits in
+  let allocate bits = De.make_window ~bits in
   let decoder = Fp.decoder ~o ~allocate `Manual in
   let tmp0 = Bytes.create 0x1000 in
   let tmp1 = Bigstringaf.create 0x1000 in
