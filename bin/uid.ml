@@ -5,6 +5,7 @@ let empty = Digestif.SHA1.empty
 let feed = Digestif.SHA1.feed_bigstring
 let get = Digestif.SHA1.get
 
+let hash x = Char.code (Digestif.SHA1.to_raw_string x).[0]
 let length = Digestif.SHA1.digest_size
 let equal = Digestif.SHA1.equal
 let pp = Digestif.SHA1.pp

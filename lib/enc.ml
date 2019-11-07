@@ -5,58 +5,53 @@ module Option = struct
   let ( >>= ) = bind
 end
 
-type 'uid entry =
+type ('uid, 'v) entry =
   { uid : 'uid
   ; kind : kind
   ; length : int
   ; preferred : bool
-  ; hash : int
+  ; value : 'v
   ; delta : 'uid delta }
 and 'uid delta = From of 'uid | Zero
 
-let kind_to_int = function
-  | `A -> 0 | `B -> 1 | `C -> 2 | `D -> 3
-let bool_to_int = function
-  | false -> 0 | true -> 1
+let make_entry ~kind ~length ?(preferred= false) ?(delta= Zero) uid v =
+  { uid; kind; length; preferred; value= v; delta; }
 
-let compare_entry a b =
-  if kind_to_int a.kind > kind_to_int b.kind then (-1)
-  else if kind_to_int a.kind < kind_to_int b.kind then 1
-  else if a.hash > b.hash then (-1)
-  else if a.hash < b.hash then 1
-  else if bool_to_int a.preferred > bool_to_int b.preferred then (-1)
-  else if bool_to_int a.preferred < bool_to_int b.preferred then 1
-  else if a.length > b.length then (-1)
-  else if a.length < b.length then 1
-  else compare a b
-
-let hash x =
-  let res = ref 0 in
-  for i = 0 to String.length x - 1
-  do if x.[i] <> ' ' then res := (!res lsr 2) + (Char.code x.[i] lsl 24) done ;
-  !res
-
-let make_entry ~kind ~length ?(preferred= false) ?(name= "") ?(delta= Zero) uid =
-  { uid; kind; length; preferred; hash= hash name; delta; }
+let value { value; _ } = value
 
 module Utils = struct
   let length_of_variable_length n =
     let rec go r = function 0 -> r | n -> go (succ r) (n lsr 7) in
     go 1 (n lsr 7)
 
-  let length_of_copy_code n =
-    let rec go r n = if n = 0 then r else go (succ r) (n lsr 8) in
-    if n = 0 then 1 else go 0 n
+  let cmd off len =
+    let cmd = ref 0 in
+
+    if off land 0x000000ff <> 0 then cmd := !cmd lor 0x01 ;
+    if off land 0x0000ff00 <> 0 then cmd := !cmd lor 0x02 ;
+    if off land 0x00ff0000 <> 0 then cmd := !cmd lor 0x04 ;
+    if off land 0x7f000000 <> 0 then cmd := !cmd lor 0x08 ;
+
+    if len land 0x0000ff <> 0 then cmd := !cmd lor 0x10 ;
+    if len land 0x00ff00 <> 0 then cmd := !cmd lor 0x20 ;
+    if len land 0xff0000 <> 0 then cmd := !cmd lor 0x40 ;
+
+    !cmd
+  [@@inline]
+
+  let length_of_copy_code ~off ~len =
+    let required =
+      let a = [| 0; 1; 1; 2; 1; 2; 2; 3; 1; 2; 2; 3; 2; 3; 3; 4 |] in
+      fun x -> a.(x land 0xf) + a.(x lsr 4) in
+    let cmd = cmd off len in
+    required cmd
 
   let length ~source ~target hunks =
     length_of_variable_length source +
     length_of_variable_length target +
     List.fold_left (fun acc -> function
         | Duff.Insert (_, len) -> 1 + len + acc
-        | Duff.Copy (off, len) ->
-          1 + length_of_copy_code off +
-          (if len = 0x10000 then 1 else length_of_copy_code len) +
-          acc)
+        | Duff.Copy (off, len) -> 1 + length_of_copy_code ~off ~len + acc)
       0 hunks
 end
 
@@ -71,19 +66,21 @@ module W = struct
   let get t = Weak.get t 0
 end
 
-type 'uid p = { index : Duff.index W.t
-              ; entry : 'uid entry
-              ; depth : int
-              ; v : Dec.v W.t }
+type ('uid, 'v) p =
+  { index : Duff.index W.t
+  ; entry : ('uid, 'v) entry
+  ; depth : int
+  ; v : Dec.v W.t }
 
 type 'uid patch = { hunks : Duff.hunk list
                   ; depth : int
                   ; source : 'uid
                   ; source_length : int }
 
-type 'uid q = { mutable patch : 'uid patch option
-              ; entry : 'uid entry
-              ; v : Dec.v W.t }
+type ('uid, 'v) q =
+  { mutable patch : 'uid patch option
+  ; entry : ('uid, 'v) entry
+  ; v : Dec.v W.t }
 
 let target_uid { entry; _ } = entry.uid
 
@@ -107,37 +104,38 @@ let pp_delta pp_uid ppf = function
   | Zero -> Fmt.string ppf "<none>"
   | From uid -> Fmt.pf ppf "@[<1>(From %a)@]" pp_uid uid
 
-let pp_entry pp_uid ppf entry =
+let pp_entry pp_uid pp_data ppf entry =
   Fmt.pf ppf "{ @[<hov>uid= %a;@ \
                        kind= %a;@ \
                        length= %d;@ \
                        preferred= %b;@ \
-                       hash= %d;@ \
+                       value= @[<hov>%a@];@ \
                        delta= @[<hov>%a@];@] }"
     pp_uid entry.uid
     pp_kind entry.kind
-    entry.length entry.preferred entry.hash
+    entry.length entry.preferred
+    pp_data entry.value
     (pp_delta pp_uid) entry.delta
 
-let pp_q pp_uid ppf q =
+let pp_q pp_uid pp_data ppf q =
   Fmt.pf ppf "{ @[<hov>patch= @[<hov>%a@]; \
                        entry= @[<hov>%a@]; \
                        v= %s@] }"
     Fmt.(Dump.option (pp_patch q.entry.length pp_uid)) q.patch
-    (pp_entry pp_uid) q.entry
+    (pp_entry pp_uid pp_data) q.entry
     (if Weak.check q.v 0 then "#raw" else "NULL")
 
 [@@@warning "+32"]
 
 type ('uid, 's) load = 'uid -> (Dec.v, 's) io
 
-let depth_of_source : 'uid p -> int = fun { depth; _ } -> depth
+let depth_of_source : ('uid, 'v) p -> int = fun { depth; _ } -> depth
 
-let depth_of_target : 'uid q -> int = fun { patch; _ } -> match patch with
+let depth_of_target : ('uid, 'v) q -> int = fun { patch; _ } -> match patch with
   | None -> 1 | Some { depth; _ } -> depth
 
 let target_to_source
-  : 'uid q -> 'uid p
+  : ('uid, 'v) q -> ('uid, 'v) p
   = fun target ->
     { index= W.create ()
     ; entry= target.entry
@@ -145,7 +143,7 @@ let target_to_source
     ; v= target.v (* XXX(dinosaure): dragoon here! *) }
 
 let entry_to_target
-  : type s. s scheduler -> load:('uid, s) load -> 'uid entry -> ('uid q, s) io
+  : type s. s scheduler -> load:('uid, s) load -> ('uid, 'v) entry -> (('uid, 'v) q, s) io
   = fun { bind; return; } ~load entry ->
     let ( >>= ) = bind in
 
@@ -164,7 +162,9 @@ let length_of_delta ~source ~target hunks = Utils.length ~source ~target hunks
 exception Break
 exception Next
 
-let apply { bind; return; } ~load ~uid_ln ~(source:'uid p) ~(target:'uid q) =
+let apply
+  : type s uid. s scheduler -> load:(uid, s) load -> uid_ln:int -> source:(uid, 'v) p -> target:(uid, 'v) q -> (unit, s) io
+  = fun { bind; return; } ~load ~uid_ln ~source ~target ->
   let ( >>= ) = bind in
 
   if source.entry.kind <> target.entry.kind
@@ -225,14 +225,18 @@ module type VERBOSE = sig
   val print : unit -> unit fiber
 end
 
+module type UID = sig
+  type t
+
+  val hash : t -> int
+  val equal : t -> t -> bool
+end
+
 module Delta
     (Scheduler : SCHEDULER)
     (IO : IO with type 'a t = 'a Scheduler.s)
     (Uid : UID)
     (Verbose : VERBOSE with type 'a fiber = 'a IO.t) = struct
-  module K = struct type t = Uid.t let hash = Hashtbl.hash let equal = Uid.equal end
-  module V = struct type t = Uid.t p let weight ({ entry; _ } : Uid.t p) = entry.length end
-  module Window = Lru.M.Make(K)(V)
 
   let ( >>= ) = IO.bind
   let return = IO.return
@@ -245,13 +249,18 @@ module Delta
   let[@warning "-32"] same_island : 'uid -> 'uid -> bool = fun _ _ -> true
   (* XXX(dinosaure): TODO [delta-islands]! *)
 
-  let delta ~load ~weight targets =
+  let delta
+    : type v. load:(Uid.t, Scheduler.t) load -> weight:int -> uid_ln:int -> (Uid.t, v) q array -> unit IO.t
+    = fun ~load ~weight ~uid_ln targets ->
+    let module V = struct type t = V : (Uid.t, v) p -> t let weight (V { entry; _ }) = entry.length end in
+    let module Window = Lru.M.Make(Uid)(V) in
     let window = Window.create weight in
 
     let go target =
       let best : Window.k option ref = ref None in
       let f (key : Window.k) source =
-        try ( apply s ~load ~uid_ln:Uid.length ~source ~target |> Scheduler.prj
+        let V.V source = source in
+        try ( apply s ~load ~uid_ln ~source ~target |> Scheduler.prj
               >>= fun () -> best := (Some key) ; return () )
         with Next -> return ()
            | Break as exn -> raise_notrace exn in
@@ -266,12 +275,12 @@ module Delta
       then
         ( go targets.(i) >>= fun best ->
           Verbose.print () >>= fun () ->
-          Window.add targets.(i).entry.uid (target_to_source targets.(i)) window
-          ; ( match Option.(best >>= fun best -> Window.find best window) with
-              | Some s ->
+            ( match Option.(best >>= fun best -> Window.find best window) with
+              | Some (V.V s) ->
                 if s.depth < _max_depth
                 then Window.promote s.entry.uid window
               | None -> Window.trim window )
+          ; Window.add targets.(i).entry.uid (V.V (target_to_source targets.(i))) window
           ; (map[@tailcall]) (succ i) )
       else return () in
     map 0
@@ -279,7 +288,7 @@ module Delta
   type m = { mutable v : int; m : IO.Mutex.t }
 
   let dispatcher
-    : type uid. load:(uid, Scheduler.t) load -> mutex:m -> entries:uid entry array -> targets:uid q array -> unit IO.t
+    : load:(Uid.t, Scheduler.t) load -> mutex:m -> entries:(Uid.t, 'v) entry array -> targets:(Uid.t, 'v) q option array -> unit IO.t
     = fun ~load ~mutex ~entries ~targets ->
       let rec go () =
         IO.Mutex.lock mutex.m >>= fun () ->
@@ -288,28 +297,22 @@ module Delta
         then ( IO.Mutex.unlock mutex.m ; IO.return () )
         else ( IO.Mutex.unlock mutex.m
              ; entry_to_target s ~load entries.(v) |> Scheduler.prj >>= fun target ->
-               targets.(v) <- target
+               targets.(v) <- Some target
              ; go () ) in
       go ()
 
-  let dummy : Uid.t q =
-    { patch= None
-    ; entry= { uid= Uid.null
-             ; kind= `A
-             ; length= 0
-             ; preferred= false
-             ; hash= 0
-             ; delta= Zero }
-    ; v= W.create () }
+  let get = function Some x -> x | None -> assert false
 
-  let delta ~threads ~weight entries =
+  let delta ~threads ~weight ~uid_ln entries =
     let mutex = { v= 0; m= IO.Mutex.create () } in
-    let targets = Array.make (Array.length entries) dummy in
+    let targets = Array.make (Array.length entries) None in
     IO.nfork_map
       ~f:(fun load -> dispatcher ~load ~mutex ~entries ~targets)
       threads
     >>= fun futures -> IO.all_unit (List.map IO.Future.wait futures)
-    >>= fun () -> delta ~load:(List.hd threads) ~weight targets
+    >>= fun () ->
+    let targets = Array.map get targets in
+    delta ~load:(List.hd threads) ~weight ~uid_ln targets
     >>= fun () -> return targets
 end
 
@@ -321,7 +324,7 @@ module N : sig
     ; q : De.Queue.t
     ; w : De.window }
 
-  val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> 'uid q -> (encoder, 's) io
+  val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> ('uid, 'v) q -> (encoder, 's) io
   val encode : o:Bigstringaf.t -> encoder -> [ `Flush of (encoder * int) | `End ]
   val dst : encoder -> Bigstringaf.t -> int -> int -> encoder
 end = struct
@@ -367,7 +370,7 @@ end = struct
     | H encoder -> let encoder = Zh.N.dst encoder s j l in H encoder
 
   let encoder
-    : type s. s scheduler -> b:b -> load:('uid, s) load -> 'uid q -> (encoder, s) io
+    : type s. s scheduler -> b:b -> load:('uid, s) load -> ('uid, 'v) q -> (encoder, s) io
     = fun { bind; return; } ~b ~load target ->
       let ( >>= ) = bind in
 
@@ -402,16 +405,16 @@ let encode_header ~o kind length =
   let c = ref ((kind lsl 4) lor (length land 15)) in
   let l = ref (length asr 4) in
   let p = ref 0 in
+  let n = ref 1 in
 
   while !l != 0 do
-    Bigstringaf.set o !p (Char.unsafe_chr (!c lor 0x80)) ;
+    Bigstringaf.set o !p (Char.unsafe_chr (!c lor 0x80)) ; incr p ;
     c := !l land 0x7f ;
     l := !l asr 7 ;
-    incr p ;
+    incr n ;
   done ;
 
-  Bigstringaf.set o !p (Char.unsafe_chr !c) ;
-  incr p ; !p
+  Bigstringaf.set o !p (Char.unsafe_chr !c) ; !n
 
 type 'uid uid =
   { uid_ln : int
@@ -432,7 +435,7 @@ let header_of_pack ~length buf off len =
   Bigstringaf.set_int32_be buf (off + 8) (Int32.of_int length)
 
 let encode_target
-  : type s. s scheduler -> b:b -> find:('uid, s) find -> load:('uid, s) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, s) io
+  : type s. s scheduler -> b:b -> find:('uid, s) find -> load:('uid, s) load -> uid:'uid uid -> ('uid, 'v) q -> cursor:int -> (int * N.encoder, s) io
   = fun ({ bind; return; } as s) ~b ~find ~load ~uid target ~cursor ->
     let ( >>= ) = bind in
 

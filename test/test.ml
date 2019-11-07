@@ -19,24 +19,32 @@ let z = Bigstringaf.create De.io_buffer_size
 let allocate bits = De.make_window ~bits
 let o = Bigstringaf.create De.io_buffer_size
 
+let empty_pack, uid_empty_pack =
+  let open Shcaml in
+  let () =
+    Fitting.(command "git pack-objects -q --stdout"
+             />/ Channel.Dup.[ 1 %>! "pack-null" ]
+             /</ Channel.Dup.[ 0 %<* `Null ])
+    |> Fitting.run
+    |> function Shcaml.Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git pack-objects'" in
+  let ic = open_in "pack-null" in
+  let ln = in_channel_length ic in
+  let rs = Bytes.create ln in
+  really_input ic rs 0 ln ; close_in ic ;
+  Bytes.unsafe_to_string rs,
+  Digestif.SHA1.of_raw_string (Bytes.sub_string rs (Bytes.length rs - 20) 20)
+
 let test_empty_pack () =
   Alcotest.test_case "empty pack" `Quick @@ fun () ->
+  let contents_expected = empty_pack in
   let buf = Bigstringaf.create 12 in
   let ctx = Digestif.SHA1.empty in
   Carton.Enc.header_of_pack ~length:0 buf 0 12 ;
   let ctx = Digestif.SHA1.feed_bigstring ctx buf ~off:0 ~len:12 in
   let sha = Digestif.SHA1.get ctx in
-  Alcotest.(check sha1) "hash" sha (Digestif.SHA1.of_hex "029d08823bd8a8eab510ad6ac75c823cfd3ed31e") ;
+  Alcotest.(check sha1) "hash" sha uid_empty_pack ;
   let res = Bigstringaf.to_string buf ^ Digestif.SHA1.to_raw_string sha in
-  Alcotest.(check s) "contents" res
-    "PACK\000\000\000\002\000\000\000\000\
-     \002\157\b\130;\216\168\234\181\016\173j\199\\\130<\253>\211\030"
-
-let empty_pack =
-  let v =
-    "PACK\000\000\000\002\000\000\000\000\
-     \002\157\b\130;\216\168\234\181\016\173j\199\\\130<\253>\211\030" in
-  Bigstringaf.of_string v ~off:0 ~len:(String.length v)
+  Alcotest.(check s) "contents" res contents_expected
 
 module Fp = Carton.Dec.Fp(Uid)
 
@@ -57,7 +65,7 @@ let fd_and_read_of_bigstring_list lst =
 
 let valid_empty_pack () =
   Alcotest.test_case "valid empty pack" `Quick @@ fun () ->
-  let fd, read = fd_and_read_of_bigstring_list [ empty_pack ] in
+  let fd, read = fd_and_read_of_bigstring_list [ Bigstringaf.of_string ~off:0 ~len:(String.length empty_pack) empty_pack ] in
   let max, buf = Us.prj (Fp.check_header unix read fd) in
   let tmp0 = Bytes.create De.io_buffer_size in
   let tmp1 = Bigstringaf.create De.io_buffer_size in
@@ -69,8 +77,7 @@ let valid_empty_pack () =
 
   let rec go decoder = match Fp.decode decoder with
     | `End uid ->
-      Alcotest.(check sha1) "hash" uid
-        (Digestif.SHA1.of_hex "029d08823bd8a8eab510ad6ac75c823cfd3ed31e")
+      Alcotest.(check sha1) "hash" uid uid_empty_pack
     | `Entry _ -> Alcotest.fail "Unexpected entry"
     | `Malformed err -> Alcotest.fail err
     | `Await decoder ->
@@ -103,8 +110,8 @@ let verify_empty_pack () =
   Alcotest.test_case "verify empty pack" `Quick @@ fun () ->
   let t = Carton.Dec.make () ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string (fun _ -> Alcotest.fail "Invalid call to IDX") in
   let map () ~pos length =
-    let len = min length (Int64.to_int pos - Bigstringaf.length empty_pack) in
-    Us.inj (Bigstringaf.sub empty_pack ~off:(Int64.to_int pos) ~len) in
+    let len = min length (Int64.to_int pos - String.length empty_pack) in
+    Us.inj (Bigstringaf.of_string empty_pack ~off:(Int64.to_int pos) ~len) in
   let oracle =
     { Carton.Dec.digest= digest_like_git
     ; children= (fun ~cursor:_ ~uid:_ -> [])
@@ -114,46 +121,24 @@ let verify_empty_pack () =
 
 module Idx = Carton.Dec.Idx.N(Uid)
 
-let empty_index =
-  "\255tOc\000\000\000\002\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\
-   \002\157\b\130;\216\168\234\181\016\173j\199\\\130<\253>\211\030\144\211\1474\226FGc\023\234F\158W\167\165\189\184Fth"
+let empty_index, uid_empty_index =
+  let open Shcaml in
+  let () =
+    Fitting.(command "git pack-objects -q --stdout" /</ Channel.Dup.[ 0 %<* `Null ]
+             -| command "git index-pack --stdin -o index-null")
+    |> Fitting.run
+    |> function Shcaml.Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git index-pack'" in
+  let ic = open_in "index-null" in
+  let ln = in_channel_length ic in
+  let rs = Bytes.create ln in
+  really_input ic rs 0 ln ; close_in ic ;
+  Bytes.unsafe_to_string rs,
+  Digestif.SHA1.of_raw_string (Bytes.sub_string rs (Bytes.length rs - 20) 20)
 
 let index_of_empty_pack () =
   Alcotest.test_case "index of empty pack" `Quick @@ fun () ->
   let p = ref 0 and c = ref 0 in
-  let encoder = Idx.encoder `Manual ~pack:(Uid.of_hex "029d08823bd8a8eab510ad6ac75c823cfd3ed31e") [||] in
+  let encoder = Idx.encoder `Manual ~pack:uid_empty_pack [||] in
   Idx.dst encoder o 0 (Bigstringaf.length o) ;
 
   let rec go () = match Idx.encode encoder `Await with
@@ -167,7 +152,7 @@ let index_of_empty_pack () =
   go () ;
   let uid = Bigstringaf.substring o ~off:(!p - Uid.length) ~len:Uid.length in
   let uid = Uid.of_raw_string uid in
-  Alcotest.(check sha1) "hash" uid (Uid.of_hex "90d39334e246476317ea469e57a7a5bdb8467468")
+  Alcotest.(check sha1) "hash" uid uid_empty_index
 
 let check_empty_index () =
   Alcotest.test_case "check empty index" `Quick @@ fun () ->
@@ -208,6 +193,11 @@ let index_of_bomb_pack () =
   let tmp1 = Bigstringaf.create 0x1000 in
 
   let ic = open_in "bomb.pack" in
+  let hash_expected =
+    let len = in_channel_length ic in
+    seek_in ic (len - 20) ;
+    let res = really_input_string ic 20 in
+    let res = Digestif.SHA1.of_raw_string res in seek_in ic 0 ; res in
 
   let max, buf = Fp.check_header unix (fun ic buf ~off ~len -> Us.inj (input ic buf off len)) ic |> Us.prj in
   let decoder = Fp.src decoder (Bigstringaf.of_string buf ~off:0 ~len:12) 0 12 in
@@ -219,8 +209,6 @@ let index_of_bomb_pack () =
 
   let rec go decoder = match Fp.decode decoder with
     | `Await decoder ->
-      Fmt.epr "`AWAIT\n%!" ;
-
       let len = input ic tmp0 0 0x1000 in
       Bigstringaf.blit_from_bytes tmp0 ~src_off:0 tmp1 ~dst_off:0 ~len ;
       let decoder = Fp.src decoder tmp1 0 len in
@@ -255,7 +243,7 @@ let index_of_bomb_pack () =
     | `Entry _ -> (* OBJ_REF *) Alcotest.fail "Unexpected OBJ_REF"
     | `Malformed err -> Alcotest.fail err
     | `End uid ->
-      Alcotest.(check sha1) "hash" uid (Uid.of_hex "d1c2ce2fc6dfaaa18d0ea1b564334d738b0e2339") in
+      Alcotest.(check sha1) "hash" uid hash_expected in
 
   go decoder ; close_in ic ;
   let fd = Unix.openfile "bomb.pack" Unix.[ O_RDONLY ] 0o644 in

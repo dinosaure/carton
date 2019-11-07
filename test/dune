@@ -1,6 +1,6 @@
 (executable
  (name test)
- (libraries checkseum.c digestif.c mmap unix threads carton alcotest))
+ (libraries shcaml checkseum.c digestif.c mmap unix threads carton alcotest))
 
 (alias
  (name runtest)
