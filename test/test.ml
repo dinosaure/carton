@@ -26,7 +26,7 @@ let empty_pack, uid_empty_pack =
              />/ Channel.Dup.[ 1 %>! "pack-null" ]
              /</ Channel.Dup.[ 0 %<* `Null ])
     |> Fitting.run
-    |> function Shcaml.Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git pack-objects'" in
+    |> function Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git pack-objects'" in
   let ic = open_in "pack-null" in
   let ln = in_channel_length ic in
   let rs = Bytes.create ln in
@@ -176,6 +176,28 @@ let index_of_one_entry () =
   Alcotest.(check int) "number of entries" (Carton.Dec.Idx.max idx) 1 ;
   Alcotest.(check (option (pair optint int64))) "entry" (Carton.Dec.Idx.find idx Uid.null) (Some (Checkseum.Crc32.default, 0L))
 
+let file =
+  let compare a b =
+    let ic_a = open_in a in
+    let ic_b = open_in b in
+    let ln_a = in_channel_length ic_a and ln_b = in_channel_length ic_b in
+    if ln_a <> ln_b then ( close_in ic_a ; close_in ic_b ; false )
+    else
+      let bf_a = Bytes.create 0x1000 and bf_b = Bytes.create 0x1000 in
+      let rec go () = match input ic_a bf_a 0 0x1000, input ic_b bf_b 0 0x1000 with
+        | 0, 0 -> true
+        | rs_a, rs_b when rs_a = rs_b ->
+          if not (Bytes.sub_string bf_a 0 rs_a = Bytes.sub_string bf_b 0 rs_b)
+          then false else go ()
+        | _ -> false
+        | exception End_of_file -> true in
+      ( let rs = go () in close_in ic_a ; close_in ic_b ; rs ) in
+  Alcotest.testable Fmt.string compare
+
+let zip a b =
+  if Array.length a <> Array.length b then Fmt.invalid_arg "Array.zip" ;
+  Array.init (Array.length a) (fun i -> a.(i), b.(i))
+
 type fd_with_length = { fd : Unix.file_descr; mx : int64; }
 
 let map { fd; mx; } ~pos len =
@@ -184,8 +206,8 @@ let map { fd; mx; } ~pos len =
   let mp = Bigarray.array1_of_genarray mp in
   Us.inj mp
 
-let index_of_bomb_pack () =
-  Alcotest.test_case "index of bomb pack" `Quick @@ fun () ->
+let verify_bomb_pack () =
+  Alcotest.test_case "verify & generate index of bomb pack" `Quick @@ fun () ->
   let o = Bigstringaf.create 0x1000 in
   let allocate bits = De.make_window ~bits in
   let decoder = Fp.decoder ~o ~allocate `Manual in
@@ -203,6 +225,7 @@ let index_of_bomb_pack () =
   let decoder = Fp.src decoder (Bigstringaf.of_string buf ~off:0 ~len:12) 0 12 in
 
   let weight = Hashtbl.create max in
+  let checks = Hashtbl.create max in
   let children = Hashtbl.create max in
   let where = Hashtbl.create max in
   let matrix = Array.make max Verify.unresolved_node in
@@ -220,17 +243,19 @@ let index_of_bomb_pack () =
       let decoder = Fp.src decoder tmp1 0 (keep + len) in
       go decoder
     | `Entry ({ Fp.kind= Base _
-              ; offset; size; _ }, decoder) ->
+              ; offset; size; crc; _ }, decoder) ->
       let n = Fp.count decoder - 1 in
+      Hashtbl.add checks offset crc ;
       Hashtbl.add weight offset size ;
       Hashtbl.add where offset n ;
       matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
       go decoder
     | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
-              ; offset; _ }, decoder) ->
+              ; offset; crc; _ }, decoder) ->
       let n = Fp.count decoder - 1 in
       let base = Int64.(sub offset (of_int s)) in
 
+      Hashtbl.add checks offset crc ;
       Hashtbl.add weight base source ;
       Hashtbl.add weight offset target ;
       Hashtbl.add where offset n ;
@@ -263,7 +288,31 @@ let index_of_bomb_pack () =
   let z = Bigstringaf.create 0x1000 in
   let t = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
       (fun _ -> Alcotest.fail "Invalid call to IDX") in
-  Verify.verify ~threads:1 ~map ~oracle t ~matrix ; Unix.close fd
+  Verify.verify ~threads:1 ~map ~oracle t ~matrix ; Unix.close fd ;
+
+  let offsets =
+    Hashtbl.fold (fun k _ a -> k :: a) where []
+    |> List.sort Stdlib.compare
+    |> Array.of_list in
+  let matrix = zip offsets matrix in
+  let entries =
+    Array.map (fun (offset, s) ->
+        let uid = Verify.uid_of_status s in
+        let crc = Hashtbl.find checks offset in
+        { Idx.crc; Idx.offset; Idx.uid }) matrix in
+  let oc = open_out "bomb.idx" in
+  let encoder = Idx.encoder (`Channel oc) ~pack:hash_expected entries in
+  let go () = match Idx.encode encoder `Await with `Partial -> assert false | `Ok -> () in
+  go () ; close_out oc ;
+
+  let () =
+    let open Shcaml in
+    Fitting.(command "git index-pack -o git-bomb.idx bomb.pack")
+    |> Fitting.run
+    |> function Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git index-pack" in
+
+  Fmt.epr ">>> OK\n%!" ;
+  Alcotest.(check file) "index" "git-bomb.idx" "bomb.idx"
 
 let first_entry_of_bomb_pack () =
   Alcotest.test_case "first entry of bomb pack" `Quick @@ fun () ->
@@ -282,6 +331,19 @@ let first_entry_of_bomb_pack () =
   Alcotest.(check int) "length" (Carton.Dec.len v) 218 ;
   Alcotest.(check int) "depth" (Carton.Dec.depth v) 1
 
+let unpack_bomb_pack () =
+  Alcotest.test_case "unpack bomb pack" `Quick @@ fun () ->
+  let t = Carton.Dec.make () ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string (fun _ -> Alcotest.fail "Invalid call to IDX") in
+  let map () ~pos length =
+    let len = min length (Int64.to_int pos - String.length empty_pack) in
+    Us.inj (Bigstringaf.of_string empty_pack ~off:(Int64.to_int pos) ~len) in
+  let oracle =
+    { Carton.Dec.digest= digest_like_git
+    ; children= (fun ~cursor:_ ~uid:_ -> [])
+    ; where= (fun ~cursor:_ -> Alcotest.fail "Invalid call to [where]")
+    ; weight= (fun ~cursor:_ -> Alcotest.fail "Invalid call to [weight]") } in
+  Verify.verify ~threads:1 ~map ~oracle t ~matrix:[||]
+
 let () =
   Alcotest.run "carton"
     [ "encoder", [ test_empty_pack ()
@@ -290,5 +352,5 @@ let () =
     ; "decoder", [ valid_empty_pack ()
                  ; verify_empty_pack ()
                  ; check_empty_index ()
-                 ; index_of_bomb_pack ()
+                 ; verify_bomb_pack ()
                  ; first_entry_of_bomb_pack () ] ]

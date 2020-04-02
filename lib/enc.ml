@@ -2,6 +2,7 @@ open Sigs
 
 module Option = struct
   let bind x f = match x with Some x -> f x | None -> None
+  let is_some = function Some _ -> true | _ -> false
   let ( >>= ) = bind
 end
 
@@ -265,7 +266,8 @@ module Delta
         with Next -> return ()
            | Break as exn -> raise_notrace exn in
       let rec go = function
-        | [] -> Verbose.succ () >>= fun () -> return ()
+        | [] ->
+          if Option.is_some !best then Verbose.succ () else return ()
         | (k, v) :: r ->
           ( try f k v >>= fun () -> (go[@tailcall]) r
             with Break -> return () ) in
@@ -274,13 +276,14 @@ module Delta
       if i < Array.length targets
       then
         ( go targets.(i) >>= fun best ->
-          Verbose.print () >>= fun () ->
+          Window.add targets.(i).entry.uid (V.V (target_to_source targets.(i))) window
+        ; Verbose.print () >>= fun () ->
             ( match Option.(best >>= fun best -> Window.find best window) with
               | Some (V.V s) ->
                 if s.depth < _max_depth
-                then Window.promote s.entry.uid window
-              | None -> Window.trim window )
-          ; Window.add targets.(i).entry.uid (V.V (target_to_source targets.(i))) window
+                then ( Window.promote s.entry.uid window )
+              | None -> () )
+          ; Window.trim window
           ; (map[@tailcall]) (succ i) )
       else return () in
     map 0
