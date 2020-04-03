@@ -1,24 +1,17 @@
 open Sigs
 
-module Option = struct
-  let bind x f = match x with Some x -> f x | None -> None
-  let is_some = function Some _ -> true | _ -> false
-  let ( >>= ) = bind
-end
-
-type ('uid, 'v) entry =
+type 'uid entry =
   { uid : 'uid
   ; kind : kind
   ; length : int
   ; preferred : bool
-  ; value : 'v
   ; delta : 'uid delta }
 and 'uid delta = From of 'uid | Zero
 
-let make_entry ~kind ~length ?(preferred= false) ?(delta= Zero) uid v =
-  { uid; kind; length; preferred; value= v; delta; }
+let make_entry ~kind ~length ?(preferred= false) ?(delta= Zero) uid =
+  { uid; kind; length; preferred; delta; }
 
-let value { value; _ } = value
+let length { length; _ } = length
 
 module Utils = struct
   let length_of_variable_length n =
@@ -67,9 +60,9 @@ module W = struct
   let get t = Weak.get t 0
 end
 
-type ('uid, 'v) p =
+type 'uid p =
   { index : Duff.index W.t
-  ; entry : ('uid, 'v) entry
+  ; entry : 'uid entry
   ; depth : int
   ; v : Dec.v W.t }
 
@@ -78,9 +71,9 @@ type 'uid patch = { hunks : Duff.hunk list
                   ; source : 'uid
                   ; source_length : int }
 
-type ('uid, 'v) q =
+type 'uid q =
   { mutable patch : 'uid patch option
-  ; entry : ('uid, 'v) entry
+  ; entry : 'uid entry
   ; v : Dec.v W.t }
 
 let target_uid { entry; _ } = entry.uid
@@ -105,38 +98,36 @@ let pp_delta pp_uid ppf = function
   | Zero -> Fmt.string ppf "<none>"
   | From uid -> Fmt.pf ppf "@[<1>(From %a)@]" pp_uid uid
 
-let pp_entry pp_uid pp_data ppf entry =
+let pp_entry pp_uid ppf entry =
   Fmt.pf ppf "{ @[<hov>uid= %a;@ \
                        kind= %a;@ \
                        length= %d;@ \
                        preferred= %b;@ \
-                       value= @[<hov>%a@];@ \
                        delta= @[<hov>%a@];@] }"
     pp_uid entry.uid
     pp_kind entry.kind
     entry.length entry.preferred
-    pp_data entry.value
     (pp_delta pp_uid) entry.delta
 
-let pp_q pp_uid pp_data ppf q =
+let pp_q pp_uid ppf q =
   Fmt.pf ppf "{ @[<hov>patch= @[<hov>%a@]; \
                        entry= @[<hov>%a@]; \
                        v= %s@] }"
     Fmt.(Dump.option (pp_patch q.entry.length pp_uid)) q.patch
-    (pp_entry pp_uid pp_data) q.entry
+    (pp_entry pp_uid) q.entry
     (if Weak.check q.v 0 then "#raw" else "NULL")
 
 [@@@warning "+32"]
 
 type ('uid, 's) load = 'uid -> (Dec.v, 's) io
 
-let depth_of_source : ('uid, 'v) p -> int = fun { depth; _ } -> depth
+let depth_of_source : 'uid p -> int = fun { depth; _ } -> depth
 
-let depth_of_target : ('uid, 'v) q -> int = fun { patch; _ } -> match patch with
+let depth_of_target : 'uid q -> int = fun { patch; _ } -> match patch with
   | None -> 1 | Some { depth; _ } -> depth
 
 let target_to_source
-  : ('uid, 'v) q -> ('uid, 'v) p
+  : 'uid q -> 'uid p
   = fun target ->
     { index= W.create ()
     ; entry= target.entry
@@ -144,7 +135,7 @@ let target_to_source
     ; v= target.v (* XXX(dinosaure): dragoon here! *) }
 
 let entry_to_target
-  : type s. s scheduler -> load:('uid, s) load -> ('uid, 'v) entry -> (('uid, 'v) q, s) io
+  : type s. s scheduler -> load:('uid, s) load -> 'uid entry -> ('uid q, s) io
   = fun { bind; return; } ~load entry ->
     let ( >>= ) = bind in
 
@@ -163,17 +154,29 @@ let length_of_delta ~source ~target hunks = Utils.length ~source ~target hunks
 exception Break
 exception Next
 
+(* XXX(dinosaure): [apply] tries to generate a patch between [source] and [target].
+   If the resulted patch is good enough, we set [target.patch] to it. [apply] can raise
+   two exceptions:
+
+   - [Break] where it is not able to generate a patch (different kinds)
+   - [Next] when it reaches the depth limit or resulted patch is not good enough
+
+   NOTE: [load] must create a new [Bigstringaf.t]! No cache are expected at this
+   layer where we already handle it with [W.t] (weak reference). *)
 let apply
-  : type s uid. s scheduler -> load:(uid, s) load -> uid_ln:int -> source:(uid, 'v) p -> target:(uid, 'v) q -> (unit, s) io
+  : type s uid. s scheduler -> load:(uid, s) load -> uid_ln:int -> source:uid p -> target:uid q -> (unit, s) io
   = fun { bind; return; } ~load ~uid_ln ~source ~target ->
   let ( >>= ) = bind in
 
+  (* Don't bother doing diffs between different types. *)
   if source.entry.kind <> target.entry.kind
   then ( raise_notrace Break ) ;
 
+  (* Let's not bust the allowed depth. *)
   if depth_of_source source >= _max_depth
   then ( raise_notrace Next ) ;
 
+  (* Now some size filtering heuristics. *)
   let max_length, ref_depth = match target.patch with
     | Some { hunks; source_length; depth; _ } ->
       length_of_delta ~source:source_length ~target:target.entry.length hunks, depth
@@ -193,12 +196,13 @@ let apply
   then ( raise_notrace Next ) ;
   if target.entry.length < source.entry.length / 32
   then ( raise_notrace Next ) ;
-  (* if not (same_island target.entry.uid source.entry.uid) then raise_notrace Next ; *)
 
+  (* Load data if not already done. *)
   let load_if weak uid = match W.get weak with
     | Some v -> return v
     | None ->
       load uid >>= fun v -> W.set weak v ; return v in
+  (* Load index if not already done (TODO: check it!). *)
   let index_if weak v = match W.get weak with
     | Some index -> index
     | None ->
@@ -247,51 +251,71 @@ module Delta
     { bind= (fun x f -> inj (IO.bind (prj x) (fun x -> prj (f x))))
     ; return= (fun x -> inj (IO.return x)) }
 
-  let[@warning "-32"] same_island : 'uid -> 'uid -> bool = fun _ _ -> true
-  (* XXX(dinosaure): TODO [delta-islands]! *)
-
   let delta
-    : type v. load:(Uid.t, Scheduler.t) load -> weight:int -> uid_ln:int -> (Uid.t, v) q array -> unit IO.t
+    : load:(Uid.t, Scheduler.t) load -> weight:int -> uid_ln:int -> Uid.t q array -> unit IO.t
     = fun ~load ~weight ~uid_ln targets ->
-    let module V = struct type t = V : (Uid.t, v) p -> t let weight (V { entry; _ }) = entry.length end in
-    let module Window = Lru.M.Make(Uid)(V) in
-    let window = Window.create weight in
+    let window = Array.make weight None in
 
-    let go target =
-      let best : Window.k option ref = ref None in
-      let f (key : Window.k) source =
-        let V.V source = source in
+    let find_delta idx target =
+      let best : int ref = ref (-1) in
+      let try_delta j source =
+        let other_idx = idx + j in
+        let other_idx = if other_idx >= weight then other_idx - weight else other_idx in
         try ( apply s ~load ~uid_ln ~source ~target |> Scheduler.prj
-              >>= fun () -> best := (Some key) ; return () )
+              >>= fun () -> best := other_idx ; return () )
         with Next -> return ()
            | Break as exn -> raise_notrace exn in
-      let rec go = function
-        | [] ->
-          if Option.is_some !best then Verbose.succ () else return ()
-        | (k, v) :: r ->
-          ( try f k v >>= fun () -> (go[@tailcall]) r
-            with Break -> return () ) in
-      go (Window.to_list window) >>= fun () -> return !best in
-    let rec map i =
-      if i < Array.length targets
+      let rec go j =
+        if j < 0
+        then return ()
+        else match window.(j) with
+          | Some m ->
+            ( try try_delta j m >>= fun () -> (go[@tailcall]) (pred j)
+              with Break -> return () )
+          | None -> return () (* TODO: check it! *) in
+      go (Array.length window - 1) >>= fun () ->
+      ( if !best >= 0 then Verbose.succ () else return () ) >>= fun () ->
+      return !best in
+    (* XXX(dinosaure): [git] does something a bit complex between the iteration
+       over [targets] and the [window]. [n] is the current [target] where we will try
+       to apply a patch and [idx] seems a lower-bound of the LRU-cache [window]. *)
+    let rec iter n idx =
+      if n < Array.length targets
       then
-        ( go targets.(i) >>= fun best ->
-          Window.add targets.(i).entry.uid (V.V (target_to_source targets.(i))) window
-        ; Verbose.print () >>= fun () ->
-            ( match Option.(best >>= fun best -> Window.find best window) with
-              | Some (V.V s) ->
-                if s.depth < _max_depth
-                then ( Window.promote s.entry.uid window )
-              | None -> () )
-          ; Window.trim window
-          ; (map[@tailcall]) (succ i) )
+        ( find_delta idx targets.(n) >>= fun best ->
+          (* [git] does this update __before__ to try to find a patch. However, it seems fine
+             to do that after when an object can not be patched with itself. *)
+          window.(idx) <- Some (target_to_source targets.(n)) ;
+          Verbose.print () >>= fun () ->
+
+          (* [git] wants to deflate and cache the delta data. Should we do the same? TODO *)
+          if depth_of_target targets.(n) > 1 && depth_of_target targets.(n) < _max_depth
+          then
+            (* XXX(dinosaure): a slightly assumption, if [target] has a patch,
+               [!best] (into [go]) was properly set to a valid source. Of course, that
+               means that given [targets] contains non-delta-ified objects. *)
+            ( let swap = window.(best) in
+
+              (* Move the best delta base up in the window, after the currently deltified object, to
+                 keep it longer. It will be the first base object to be attempted next. *)
+              let v = ref best in
+              for _ = (weight + idx - best) mod weight to 0 do
+                window.(!v) <- window.((!v + 1) mod weight) ;
+                v := (!v + 1) mod weight;
+              done ;
+
+              window.(!v) <- swap ) ;
+
+          if depth_of_target targets.(n) < _max_depth
+          then (iter[@tailcall]) (succ n) (if idx + 1 >= weight then 0 else idx + 1)
+          else (iter[@tailcall]) (succ n) idx )
       else return () in
-    map 0
+    iter 0 0
 
   type m = { mutable v : int; m : IO.Mutex.t }
 
   let dispatcher
-    : load:(Uid.t, Scheduler.t) load -> mutex:m -> entries:(Uid.t, 'v) entry array -> targets:(Uid.t, 'v) q option array -> unit IO.t
+    : load:(Uid.t, Scheduler.t) load -> mutex:m -> entries:Uid.t entry array -> targets:Uid.t q option array -> unit IO.t
     = fun ~load ~mutex ~entries ~targets ->
       let rec go () =
         IO.Mutex.lock mutex.m >>= fun () ->
@@ -327,7 +351,7 @@ module N : sig
     ; q : De.Queue.t
     ; w : De.window }
 
-  val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> ('uid, 'v) q -> (encoder, 's) io
+  val encoder : 's scheduler -> b:b -> load:('uid, 's) load -> 'uid q -> (encoder, 's) io
   val encode : o:Bigstringaf.t -> encoder -> [ `Flush of (encoder * int) | `End ]
   val dst : encoder -> Bigstringaf.t -> int -> int -> encoder
 end = struct
@@ -373,7 +397,7 @@ end = struct
     | H encoder -> let encoder = Zh.N.dst encoder s j l in H encoder
 
   let encoder
-    : type s. s scheduler -> b:b -> load:('uid, s) load -> ('uid, 'v) q -> (encoder, s) io
+    : type s. s scheduler -> b:b -> load:('uid, s) load -> 'uid q -> (encoder, s) io
     = fun { bind; return; } ~b ~load target ->
       let ( >>= ) = bind in
 
@@ -438,11 +462,9 @@ let header_of_pack ~length buf off len =
   Bigstringaf.set_int32_be buf (off + 8) (Int32.of_int length)
 
 let encode_target
-  : type s. s scheduler -> b:b -> find:('uid, s) find -> load:('uid, s) load -> uid:'uid uid -> ('uid, 'v) q -> cursor:int -> (int * N.encoder, s) io
+  : type s. s scheduler -> b:b -> find:('uid, s) find -> load:('uid, s) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, s) io
   = fun ({ bind; return; } as s) ~b ~find ~load ~uid target ~cursor ->
     let ( >>= ) = bind in
-
-    if Bigstringaf.length b.o < 20 then Fmt.invalid_arg "encode_entry" ;
 
     match target.patch with
     | None ->
@@ -454,14 +476,15 @@ let encode_target
         let off = encode_header ~o:b.o 0b110 (Utils.length ~source:source_length ~target:target.entry.length hunks) in
         let buf = Bytes.create 10 in
 
-        let p = ref 9 in
+        let p = ref (10 - 1) in
         let n = ref (cursor - offset) in
 
         Bytes.set buf !p (Char.unsafe_chr (!n land 127)) ;
-        while (!n asr 7) != 0 do
+        while (!n asr 7) <> 0 do
           n := !n asr 7 ;
           decr p ;
           Bytes.set buf !p (Char.unsafe_chr (128 lor ((!n - 1) land 127))) ;
+          decr n ;
         done ;
 
         Bigstringaf.blit_from_bytes buf ~src_off:!p b.o ~dst_off:off ~len:(10 - !p) ;

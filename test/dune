@@ -1,8 +1,8 @@
 (executable
  (name test)
- (libraries shcaml checkseum.c digestif.c mmap unix threads carton alcotest))
+ (libraries bos checkseum.c digestif.c mmap unix threads carton alcotest))
 
-(alias
- (name runtest)
+(rule
+ (alias runtest)
  (deps (:test test.exe) bomb.pack)
  (action (run %{test} --color=always)))

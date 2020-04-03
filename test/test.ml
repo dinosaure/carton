@@ -20,13 +20,12 @@ let allocate bits = De.make_window ~bits
 let o = Bigstringaf.create De.io_buffer_size
 
 let empty_pack, uid_empty_pack =
-  let open Shcaml in
   let () =
-    Fitting.(command "git pack-objects -q --stdout"
-             />/ Channel.Dup.[ 1 %>! "pack-null" ]
-             /</ Channel.Dup.[ 0 %<* `Null ])
-    |> Fitting.run
-    |> function Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git pack-objects'" in
+    let cmd = Bos.Cmd.(v "git" % "pack-objects" % "-q" % "--stdout") in
+    let out = Bos.OS.Cmd.(run_io cmd in_null) in
+    match Bos.OS.Cmd.out_file (Fpath.v "pack-null") out with
+    | Ok ((), (_, `Exited 0)) -> ()
+    | _ -> Alcotest.fail "Error while executing 'git pack-objects'" in
   let ic = open_in "pack-null" in
   let ln = in_channel_length ic in
   let rs = Bytes.create ln in
@@ -122,12 +121,16 @@ let verify_empty_pack () =
 module Idx = Carton.Dec.Idx.N(Uid)
 
 let empty_index, uid_empty_index =
-  let open Shcaml in
-  let () =
-    Fitting.(command "git pack-objects -q --stdout" /</ Channel.Dup.[ 0 %<* `Null ]
-             -| command "git index-pack --stdin -o index-null")
-    |> Fitting.run
-    |> function Shcaml.Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git index-pack'" in
+  let res =
+    let open Rresult in
+    let cmd = Bos.Cmd.(v "git" % "pack-objects" % "-q" % "--stdout") in
+    let out = Bos.OS.Cmd.(run_io cmd in_null) in
+    Bos.OS.Cmd.out_run_in out >>= fun in_cmd ->
+    let cmd = Bos.Cmd.(v "git" % "index-pack" % "--stdin" % "-o" % "index-null") in
+    Bos.OS.Cmd.run_in cmd in_cmd in
+  let () = match res with
+    | Ok () -> ()
+    | Error (`Msg err) -> Alcotest.fail err in
   let ic = open_in "index-null" in
   let ln = in_channel_length ic in
   let rs = Bytes.create ln in
@@ -172,9 +175,12 @@ let index_of_one_entry () =
       let pos = (Bigstringaf.length o - !p) - Idx.dst_rem encoder in
       Idx.dst encoder o pos (Bigstringaf.length o - pos) ; p := !p + pos ; go ()
     | `Ok -> Bigstringaf.sub o ~off:0 ~len:!p in
-  let idx = Carton.Dec.Idx.make (go ()) ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
-  Alcotest.(check int) "number of entries" (Carton.Dec.Idx.max idx) 1 ;
-  Alcotest.(check (option (pair optint int64))) "entry" (Carton.Dec.Idx.find idx Uid.null) (Some (Checkseum.Crc32.default, 0L))
+  let idx = Carton.Dec.Idx.make (go ())
+      ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+  Alcotest.(check int) "number of entries"
+    (Carton.Dec.Idx.max idx) 1 ;
+  Alcotest.(check (option (pair optint int64))) "entry"
+    (Carton.Dec.Idx.find idx Uid.null) (Some (Checkseum.Crc32.default, 0L))
 
 let file =
   let compare a b =
@@ -306,12 +312,10 @@ let verify_bomb_pack () =
   go () ; close_out oc ;
 
   let () =
-    let open Shcaml in
-    Fitting.(command "git index-pack -o git-bomb.idx bomb.pack")
-    |> Fitting.run
-    |> function Proc.WEXITED 0 -> () | _ -> Alcotest.fail "Error while executing 'git index-pack" in
-
-  Fmt.epr ">>> OK\n%!" ;
+    let cmd = Bos.Cmd.(v "git" % "index-pack" % "-o" % "git-bomb.idx" % "bomb.pack") in
+    match Bos.OS.Cmd.run cmd with
+    | Ok () -> ()
+    | Error (`Msg err) -> Alcotest.fail err in
   Alcotest.(check file) "index" "git-bomb.idx" "bomb.idx"
 
 let first_entry_of_bomb_pack () =
@@ -331,26 +335,197 @@ let first_entry_of_bomb_pack () =
   Alcotest.(check int) "length" (Carton.Dec.len v) 218 ;
   Alcotest.(check int) "depth" (Carton.Dec.depth v) 1
 
+let bomb_matrix = ref [||]
+let bomb_index = Hashtbl.create 0x10
+(* XXX(dinosaure): to avoid systematic unpack of bomb.pack, [unpack_bomb_pack]
+   sets [bomb_matrix] and fills [bomb_index]. Any use of them should be after
+   [unpack_bomb_pack]. *)
+
+module Verbose = struct
+  type 'a fiber = 'a
+
+  let succ () = ()
+  let print () = ()
+  let flush () = ()
+end
+
 let unpack_bomb_pack () =
   Alcotest.test_case "unpack bomb pack" `Quick @@ fun () ->
-  let t = Carton.Dec.make () ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string (fun _ -> Alcotest.fail "Invalid call to IDX") in
-  let map () ~pos length =
-    let len = min length (Int64.to_int pos - String.length empty_pack) in
-    Us.inj (Bigstringaf.of_string empty_pack ~off:(Int64.to_int pos) ~len) in
-  let oracle =
-    { Carton.Dec.digest= digest_like_git
-    ; children= (fun ~cursor:_ ~uid:_ -> [])
-    ; where= (fun ~cursor:_ -> Alcotest.fail "Invalid call to [where]")
-    ; weight= (fun ~cursor:_ -> Alcotest.fail "Invalid call to [weight]") } in
-  Verify.verify ~threads:1 ~map ~oracle t ~matrix:[||]
+  let fd = Unix.openfile "bomb.pack" Unix.[ O_RDONLY ] 0o644 in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
+  let pack = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length
+      ~uid_rw:Uid.of_raw_string (fun _ -> Alcotest.fail "Invalid call to IDX") in
+
+  let first_pass () =
+    let ic = open_in "bomb.pack" in
+    let max, _ = Us.prj (Fp.check_header unix unix_read ic) in
+    seek_in ic 0 ;
+    let decoder = Fp.decoder ~o:z ~allocate (`Channel ic) in
+    let matrix = Array.make max Verify.unresolved_node in
+
+    let where    = Hashtbl.create 0x10 in
+    let children = Hashtbl.create 0x10 in
+    let weight   = Hashtbl.create 0x10 in
+
+    let rec go decoder = match Fp.decode decoder with
+      | `Await _ | `Peek _ -> assert false
+      | `Entry ({ Fp.kind= Base _; offset; size; _ }, decoder) ->
+        let n = Fp.count decoder - 1 in
+        Hashtbl.add weight offset size ;
+        Hashtbl.add where offset n ;
+        matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
+        go decoder
+      | `Entry ({ Fp.kind= Ofs { sub= s; source; target; _ }; offset; _ }, decoder) ->
+        let n = Fp.count decoder - 1 in
+        Hashtbl.add weight Int64.(sub offset (Int64.of_int s)) source ;
+        Hashtbl.add weight offset target ;
+        Hashtbl.add where offset n ;
+        ( try
+            let v = Hashtbl.find children (`Ofs Int64.(sub offset (of_int s))) in
+            Hashtbl.add children (`Ofs Int64.(sub offset (of_int s))) (offset :: v)
+          with _exn ->
+            Hashtbl.add children (`Ofs Int64.(sub offset (of_int s))) [ offset ] ) ;
+        go decoder
+      | `Entry _ -> assert false
+      | `End _ -> close_in ic ;
+        ({ Carton.Dec.digest= digest_like_git
+         ; children= (fun ~cursor ~uid ->
+               match Hashtbl.find_opt children (`Ofs cursor),
+                     Hashtbl.find_opt children (`Ref uid) with
+               | Some a, Some b -> List.sort_uniq compare (a @ b)
+               | Some x, None | None, Some x -> x
+               | None, None -> [])
+         ; where= (fun ~cursor -> Hashtbl.find where cursor)
+         ; weight= (fun ~cursor -> Hashtbl.find weight cursor) }, matrix)
+      | `Malformed err -> Alcotest.fail err in
+    go decoder in
+
+  let oracle, matrix = first_pass () in
+  Verify.verify ~threads:1 ~map ~oracle pack ~matrix ;
+  Alcotest.(check pass) "verify" () () ;
+  let unpack status =
+    let return = unix.Carton.return in
+    let ( >>= ) = unix.Carton.bind in
+    let cursor = Verify.offset_of_status status in
+    Carton.Dec.weight_of_offset unix ~map pack ~weight:Carton.Dec.null ~cursor >>= fun weight ->
+    let raw = Carton.Dec.make_raw ~weight in
+    Carton.Dec.of_offset unix ~map pack raw ~cursor >>= fun _ -> return () in
+  Array.iter (fun s ->
+      let _ = Us.prj (unpack s) in
+      Alcotest.(check pass) (Uid.to_hex (Verify.uid_of_status s)) () ()) matrix ;
+  Alcotest.(check pass) "unpack" () () ;
+  bomb_matrix := matrix ;
+  Array.iter
+    (fun s -> Hashtbl.add bomb_index
+        (Verify.uid_of_status s)
+        (Verify.offset_of_status s)) matrix
+
+let pack_bomb_pack () =
+  Alcotest.test_case "pack bomb pack" `Quick @@ fun () ->
+  let fd = Unix.openfile "bomb.pack" Unix.[ O_RDONLY ] 0o644 in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
+  let pack = Carton.Dec.make { fd; mx; } ~z ~allocate
+      ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
+      (fun _ -> Alcotest.fail "Invalid call to IDX") in
+
+  let load uid =
+    let ( >>= ) = unix.Carton.bind in
+    match Hashtbl.find bomb_index uid with
+    | cursor ->
+      Carton.Dec.weight_of_offset unix ~map pack
+        ~weight:Carton.Dec.null ~cursor >>= fun weight ->
+      let raw = Carton.Dec.make_raw ~weight in
+      Carton.Dec.of_offset unix ~map pack raw ~cursor
+    | exception Not_found ->
+      Alcotest.failf "Invalid UID %a" Uid.pp uid in
+  let entries = Array.map (fun s ->
+      let uid = Verify.uid_of_status s in
+      let cursor = Hashtbl.find bomb_index uid in
+      let length =
+        let return = unix.Carton.return in
+        let ( >>= ) = unix.Carton.bind in
+        Carton.Dec.weight_of_offset unix ~map pack
+          ~weight:Carton.Dec.null ~cursor >>= fun weight ->
+        return (weight :> int) in
+      Carton.Enc.make_entry
+        ~kind:(Verify.kind_of_status s)
+        ~length:(Us.prj length)
+        (Verify.uid_of_status s)) !bomb_matrix in
+  let module D = Carton.Enc.Delta(Us)(IO)(Uid)(Verbose) in
+  let targets = D.delta ~threads:[ load ] ~weight:10
+      ~uid_ln:Uid.length entries in
+
+  let offsets = Hashtbl.create 0x10 in
+  let find uid = match Hashtbl.find offsets uid with
+    | v -> Us.inj (Some v)
+    | exception Not_found -> Us.inj None in
+
+  let uid =
+    { Carton.Enc.uid_ln= Uid.length
+    ; Carton.Enc.uid_rw= Uid.to_raw_string } in
+
+  let b =
+    { Carton.Enc.o= Bigstringaf.create De.io_buffer_size
+    ; Carton.Enc.i= Bigstringaf.create De.io_buffer_size
+    ; Carton.Enc.q= De.Queue.create 0x10000
+    ; Carton.Enc.w= De.make_window ~bits:15 } in
+
+  let ctx = ref Uid.empty in
+  let output_bigstring oc buf ~off ~len =
+    ctx := Uid.feed !ctx buf ~off ~len ;
+    let s = Bigstringaf.substring buf ~off ~len in
+    output_string oc s in
+
+  let oc = open_out "new.pack" in
+
+  let cursor = ref 12 in
+  let iter target =
+    let return = unix.Carton.return in
+    let ( >>= ) = unix.Carton.bind in
+
+    Hashtbl.add offsets (Carton.Enc.target_uid target) !cursor ;
+    Carton.Enc.encode_target unix
+      ~b ~find ~load ~uid target ~cursor:!cursor >>= fun (len, encoder) ->
+    let rec go encoder = match Carton.Enc.N.encode ~o:b.o encoder with
+      | `Flush (encoder, len) ->
+        output_bigstring oc b.o ~off:0 ~len ;
+        cursor := !cursor + len ;
+        let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+        go encoder
+      | `End -> () in
+    output_bigstring oc b.o ~off:0 ~len ;
+    cursor := !cursor + len ;
+    let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+    go encoder ; return () in
+  let iter target = Us.prj (iter target) in
+
+  let header = Bigstringaf.create 12 in
+  Carton.Enc.header_of_pack ~length:(Array.length targets) header 0 12 ;
+  output_bigstring oc header ~off:0 ~len:12 ;
+  Array.iter iter targets ;
+  let hash = Uid.get !ctx in
+  output_string oc (Uid.to_raw_string hash) ;
+  close_out oc ;
+
+  Alcotest.(check pass) "new.pack" () () ;
+  let res =
+    let cmd = Bos.Cmd.(v "git" % "index-pack" % "new.pack") in
+    let out = Bos.OS.Cmd.(run_out cmd) in
+    match Bos.OS.Cmd.out_lines out with
+    | Ok ([ hash ], (_, `Exited 0)) -> Uid.of_hex hash
+    | _ -> Alcotest.fail "Error while executing 'git index-pack'" in
+  let uid = Alcotest.testable Uid.pp Uid.equal in
+  Alcotest.(check uid) "hash" res hash
 
 let () =
   Alcotest.run "carton"
     [ "encoder", [ test_empty_pack ()
                  ; index_of_empty_pack ()
-                 ; index_of_one_entry () ]
+                 ; index_of_one_entry ()
+                 ; pack_bomb_pack () ]
     ; "decoder", [ valid_empty_pack ()
                  ; verify_empty_pack ()
                  ; check_empty_index ()
                  ; verify_bomb_pack ()
-                 ; first_entry_of_bomb_pack () ] ]
+                 ; first_entry_of_bomb_pack ()
+                 ; unpack_bomb_pack () ] ]

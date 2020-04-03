@@ -161,6 +161,7 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
   val kind_of_status : status -> kind
   val depth_of_status : status -> int
   val source_of_status : status -> Uid.t option
+  val offset_of_status : status -> int64
 
   val unresolved_base : cursor:int64 -> status
   val unresolved_node : status

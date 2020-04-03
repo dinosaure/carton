@@ -384,6 +384,7 @@ module W = struct
       let ( >>= ) = bind in
 
       let pos = Int64.(div w window_length) in
+      let pos = Int64.(mul pos window_length) in
 
       map t.fd ~pos (1024 * 1024) >>= fun payload ->
       let slice = Some { offset= pos
@@ -997,28 +998,35 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
   type status =
     | Unresolved_base of int64
     | Unresolved_node
-    | Resolved_base of Uid.t * kind
-    | Resolved_node of Uid.t * kind * int * Uid.t
+    | Resolved_base of int64 * Uid.t * kind
+    | Resolved_node of int64 * Uid.t * kind * int * Uid.t
 
   let uid_of_status = function
-    | Resolved_node (uid, _, _, _) | Resolved_base (uid, _) -> uid
+    | Resolved_node (_, uid, _, _, _) | Resolved_base (_, uid, _) -> uid
     | Unresolved_node ->
       Fmt.invalid_arg "Current status is not resolved"
     | Unresolved_base offset ->
       Fmt.invalid_arg "Current status is not resolved (offset: %Ld)" offset
 
+  let offset_of_status = function
+    | Resolved_node (offset, _, _, _, _)
+    | Resolved_base (offset, _, _)
+    | Unresolved_base offset -> offset
+    | Unresolved_node ->
+      Fmt.invalid_arg "Current status is not resolved"
+
   let kind_of_status = function
-    | Resolved_base (_, kind) | Resolved_node (_, kind, _, _) -> kind
+    | Resolved_base (_, _, kind) | Resolved_node (_, _, kind, _, _) -> kind
     | _ -> Fmt.invalid_arg "Current status is not resolved"
 
   let depth_of_status = function
     | Resolved_base _ | Unresolved_base _ -> 0
-    | Resolved_node (_, _, depth, _) -> depth
+    | Resolved_node (_, _, _, depth, _) -> depth
     | Unresolved_node -> Fmt.invalid_arg "Current status is not resolved"
 
   let source_of_status = function
     | Resolved_base _ | Unresolved_base _ -> None
-    | Resolved_node (_, _, _, source) -> Some source
+    | Resolved_node (_, _, _, _, source) -> Some source
     | Unresolved_node -> Fmt.invalid_arg "Current status is not resolved"
 
   let rec nodes_of_offsets
@@ -1081,12 +1089,12 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> (fd, Uid.t) t -> cursor:int64 -> matrix:status array -> unit IO.t
     = fun ~map ~oracle t ~cursor ~matrix ->
       resolver ~map ~oracle t ~cursor >>= fun (Base (kind, cursor, uid, children)) ->
-      matrix.(oracle.where ~cursor) <- Resolved_base (uid, kind) ;
+      matrix.(oracle.where ~cursor) <- Resolved_base (cursor, uid, kind) ;
       let rec go depth source = function
         | Leaf (cursor, uid) ->
-          matrix.(oracle.where ~cursor) <- Resolved_node (uid, kind, depth, source)
+          matrix.(oracle.where ~cursor) <- Resolved_node (cursor, uid, kind, depth, source)
         | Node (cursor, uid, children) ->
-          matrix.(oracle.where ~cursor) <- Resolved_node (uid, kind, depth, source) ; List.iter (go (succ depth) uid) children in
+          matrix.(oracle.where ~cursor) <- Resolved_node (cursor, uid, kind, depth, source) ; List.iter (go (succ depth) uid) children in
       List.iter (go 1 uid) children ; IO.return ()
 
   type m = { mutable v : int; m : IO.Mutex.t }
