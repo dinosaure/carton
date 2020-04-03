@@ -1,4 +1,4 @@
 (library
  (name carton)
  (public_name carton)
- (libraries hxd.string digestif.c duff lru psq decompress.zl bigstringaf fmt))
+ (libraries digestif duff decompress.zl bigstringaf psq fmt))
