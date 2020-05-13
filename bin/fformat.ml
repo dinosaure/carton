@@ -125,7 +125,7 @@ let parse s =
       | _ -> fail "Invalid format" in
     let e = take_while1 is_not_percent >>| fun v -> String v in
     many (e <|> v) in
-  match Angstrom.parse_string parser s with
+  match Angstrom.parse_string ~consume:Angstrom.Consume.All parser s with
   | Ok v -> Ok v
   | Error _ -> Rresult.R.error_msgf "Invalid format: %s" s
 
