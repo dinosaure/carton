@@ -1,4 +1,5 @@
 (executable
  (name pate)
  (public_name carton.pate)
+ (package carton)
  (libraries angstrom cmdliner bos fpath rresult carton mmap unix threads digestif.c checkseum.c hxd.string))
