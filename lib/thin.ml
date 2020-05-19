@@ -22,11 +22,11 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       match Ke.Rke.N.peek ke with
       | [] ->
         ( stream () >>= function
-        | Some src ->
+        | Some (src, off, len) ->
           Ke.Rke.N.push ke
             ~blit:blit_from_string
             ~length:String.length
-            ~off:0 ~len:(String.length src) src ;
+            ~off ~len src ;
           go filled inputs
         | None -> return filled )
       | src :: _ ->
@@ -151,11 +151,11 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     create path >>? fun fd ->
     let stream () =
       stream () >>= function
-      | Some raw ->
-        append fd raw >>= fun () ->
-        weight := Int64.add !weight (Int64.of_int (String.length raw)) ;
-        return (Some raw)
-      | None -> return None in
+      | Some (buf, off, len) as res ->
+        append fd (String.sub buf off len) >>= fun () ->
+        weight := Int64.add !weight (Int64.of_int len) ;
+        return res
+      | none -> return none in
     first_pass ~zl_buffer ~digest stream >>? fun (oracle, matrix, where, children) ->
     let weight = !weight in
     let pack = Carton.Dec.make fd ~allocate ~z:zl_buffer ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string

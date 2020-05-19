@@ -199,7 +199,7 @@ module Thin : sig
       -> digest:Uid.t Carton.Dec.digest
       -> 'path
       -> ('path, 'fd, [> `Msg of string ] as 'error) fs
-      -> (unit -> string option Lwt.t)
+      -> (unit -> (string * int * int) option Lwt.t)
       -> (int * Uid.t list * int64, 'error) result Lwt.t
 
     type light_load = Uid.t -> (Carton.kind * int) Lwt.t

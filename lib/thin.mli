@@ -15,7 +15,7 @@ module Make
     -> digest:Uid.t Carton.Dec.digest
     -> 'path
     -> ('path, 'fd, [> `Msg of string ] as 'error) fs
-    -> (unit -> string option IO.t)
+    -> (unit -> (string * int * int) option IO.t)
     -> (int * Uid.t list * int64, 'error) result IO.t
   (** [verify ~digest filename fs stream] does the first pass to analyze
      a PACK file. While it analyzes the PACK file, it saves it into
