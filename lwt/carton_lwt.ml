@@ -196,3 +196,8 @@ module Enc = struct
     let find uid = inj (find uid) in
     prj (Carton.Enc.encode_target lwt ~b ~find ~load ~uid target ~cursor)
 end
+
+module Thin = struct
+  module Make (Uid : Carton.UID) =
+    Thin.Make (Lwt_scheduler) (Lwt_io) (Uid)
+end

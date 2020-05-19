@@ -80,7 +80,6 @@ module type UID = sig
   val null : t
 end
 
-
 type kind = [ `A | `B | `C | `D ]
 
 let _max_depth = 60

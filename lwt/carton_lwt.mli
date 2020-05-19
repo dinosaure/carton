@@ -23,7 +23,7 @@ module Dec : sig
     type kind =
       | Base of [ `A | `B | `C | `D ]
       | Ofs of { sub : int; source : weight; target : weight; }
-      | Ref of { ptr : Uid.t; source : int; target : int; }
+      | Ref of { ptr : Uid.t; source : weight; target : weight; }
 
     type entry =
       { offset : int64
@@ -32,7 +32,7 @@ module Dec : sig
       ; consumed : int
       ; crc : optint }
 
-    val check_header : 'fd read -> 'fd -> (int * string) Lwt.t
+    val check_header : 'fd read -> 'fd -> (int * string * int) Lwt.t
 
     type decoder
 
@@ -105,6 +105,10 @@ module Dec : sig
 
   module Verify (Uid : Carton.UID) : sig
     type status
+
+    val pp : status Fmt.t
+
+    val is_resolved : status -> bool
 
     val uid_of_status : status -> Uid.t
     val kind_of_status : status -> Carton.kind
@@ -180,4 +184,37 @@ module Enc : sig
 
   val header_of_pack : length:int -> Bigstringaf.t -> int -> int -> unit
   val encode_target : b:b -> find:'uid find -> load:'uid load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder) Lwt.t
+end
+
+module Thin : sig
+  module Make (Uid : Carton.UID) : sig
+    type ('path, 'fd, 'error) fs =
+      { create : 'path -> ('fd, 'error) result Lwt.t
+      ; append : 'fd -> string -> unit Lwt.t
+      ; map : 'fd -> pos:int64 -> int -> Bigstringaf.t Lwt.t
+      ; close : 'fd -> unit Lwt.t }
+
+    val verify
+      :  ?threads:int
+      -> digest:Uid.t Carton.Dec.digest
+      -> 'path
+      -> ('path, 'fd, [> `Msg of string ] as 'error) fs
+      -> (unit -> string option Lwt.t)
+      -> (int * Uid.t list * int64, 'error) result Lwt.t
+
+    type light_load = Uid.t -> (Carton.kind * int) Lwt.t
+    type heavy_load = Uid.t -> Carton.Dec.v Lwt.t
+    type transmit = brk:int64 -> (bytes * int * int) Lwt.t
+  
+    val canonicalize
+      :  light_load:light_load
+      -> heavy_load:heavy_load
+      -> transmit:transmit
+      -> 'path
+      -> ('path, 'fd, [> `Msg of string ] as 'error) fs
+      -> int
+      -> Uid.t list
+      -> int64
+      -> (int64, 'error) result Lwt.t
+  end
 end

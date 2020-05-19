@@ -32,7 +32,7 @@ module Fp (Uid : UID) : sig
   type kind =
     | Base of [ `A | `B | `C | `D ]
     | Ofs of { sub : int; source : weight; target : weight; }
-    | Ref of { ptr : Uid.t; source : int; target : int; }
+    | Ref of { ptr : Uid.t; source : weight; target : weight; }
 
   type entry =
     { offset : int64
@@ -41,7 +41,7 @@ module Fp (Uid : UID) : sig
     ; consumed : int
     ; crc : optint }
 
-  val check_header : 's scheduler -> ('fd, 's) read -> 'fd -> (int * string, 's) io
+  val check_header : 's scheduler -> ('fd, 's) read -> 'fd -> (int * string * int, 's) io
 
   type decoder
 
@@ -156,6 +156,10 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
   val s : Scheduler.t scheduler
 
   type status
+
+  val pp : status Fmt.t
+
+  val is_resolved : status -> bool
 
   val uid_of_status : status -> Uid.t
   val kind_of_status : status -> kind

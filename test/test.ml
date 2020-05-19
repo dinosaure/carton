@@ -65,7 +65,7 @@ let fd_and_read_of_bigstring_list lst =
 let valid_empty_pack () =
   Alcotest.test_case "valid empty pack" `Quick @@ fun () ->
   let fd, read = fd_and_read_of_bigstring_list [ Bigstringaf.of_string ~off:0 ~len:(String.length empty_pack) empty_pack ] in
-  let max, buf = Us.prj (Fp.check_header unix read fd) in
+  let max, buf, _ = Us.prj (Fp.check_header unix read fd) in
   let tmp0 = Bytes.create De.io_buffer_size in
   let tmp1 = Bigstringaf.create De.io_buffer_size in
 
@@ -227,7 +227,7 @@ let verify_bomb_pack () =
     let res = really_input_string ic 20 in
     let res = Digestif.SHA1.of_raw_string res in seek_in ic 0 ; res in
 
-  let max, buf = Fp.check_header unix (fun ic buf ~off ~len -> Us.inj (input ic buf off len)) ic |> Us.prj in
+  let max, buf, _ = Fp.check_header unix (fun ic buf ~off ~len -> Us.inj (input ic buf off len)) ic |> Us.prj in
   let decoder = Fp.src decoder (Bigstringaf.of_string buf ~off:0 ~len:12) 0 12 in
 
   let weight = Hashtbl.create max in
@@ -358,7 +358,7 @@ let unpack_bomb_pack () =
 
   let first_pass () =
     let ic = open_in "bomb.pack" in
-    let max, _ = Us.prj (Fp.check_header unix unix_read ic) in
+    let max, _, _ = Us.prj (Fp.check_header unix unix_read ic) in
     seek_in ic 0 ;
     let decoder = Fp.decoder ~o:z ~allocate (`Channel ic) in
     let matrix = Array.make max Verify.unresolved_node in

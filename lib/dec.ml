@@ -162,18 +162,18 @@ module Fp (Uid : UID) = struct
     else fun buf off -> swap32 (get_int32 buf off)
 
   let check_header
-    : type fd s. s scheduler -> (fd, s) read -> fd -> (int * string, s) io
+    : type fd s. s scheduler -> (fd, s) read -> fd -> (int * string * int, s) io
     = fun { bind; return; } read fd ->
       let ( >>= ) = bind in
       let tmp = Bytes.create 12 in
-      read fd tmp ~off:0 ~len:12 >>= fun n ->
-      if n != 12 then Fmt.invalid_arg "Invalid PACK file" ;
+      read fd tmp ~off:0 ~len:12 >>= fun len ->
+      if len < 12 then Fmt.invalid_arg "Invalid PACK file" ;
       let h = get_int32_be tmp 0 in
       let v = get_int32_be tmp 4 in
       let n = get_int32_be tmp 8 in
       if h <> 0x5041434bl then Fmt.invalid_arg "Invalid PACK file (header: %lx <> %lx)" h 0x5041434bl ;
       if v <> 0x2l then Fmt.invalid_arg "Invalid version of PACK file" ;
-      return (Int32.to_int n, Bytes.unsafe_to_string tmp)
+      return (Int32.to_int n, Bytes.unsafe_to_string tmp, len)
 
   let rec decode d = match d.s with
     | Header ->
@@ -191,6 +191,22 @@ module Fp (Uid : UID) = struct
       refill_12 k d
     | Entry ->
       let peek_10 k d = peek k (t_peek d 10) in
+      let peek_uid k d = peek k (t_peek d Uid.length) in
+
+      let k_ref_header crc offset size d =
+        let anchor = d.i_pos in
+        let uid = Bigstringaf.substring d.i ~off:d.i_pos ~len:Uid.length in
+        let uid = Uid.of_raw_string uid in
+        let d = { d with i_pos= d.i_pos + Uid.length } in
+        
+        let z = Zl.Inf.reset d.z in
+        let z = Zl.Inf.src z d.i d.i_pos (i_rem d) in
+        let crc = Checkseum.Crc32.digest_bigstring d.i anchor (d.i_pos - anchor) crc in
+        let e = { offset; kind= Ref { ptr= uid; source= (-1); target= (-1); }; size; consumed= 0; crc; } in
+
+        decode { d with r= Int64.add d.r (Int64.of_int Uid.length); c= succ d.c; z
+                      ; s= Inflate e; k= decode
+                      ; ctx= Uid.feed d.ctx d.i ~off:anchor ~len:(d.i_pos - anchor) } in
 
       let k_ofs_header crc offset size d =
         let p = ref d.i_pos in
@@ -248,6 +264,13 @@ module Fp (Uid : UID) = struct
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) Checkseum.Crc32.default in
 
           peek_10 (k_ofs_header crc offset !size)
+            { d with i_pos= !p; r= Int64.add d.r (Int64.of_int (!p - d.i_pos))
+                   ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
+        | 0b111 ->
+          let offset = d.r in
+          let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) Checkseum.Crc32.default in
+
+          peek_uid (k_ref_header crc offset !size)
             { d with i_pos= !p; r= Int64.add d.r (Int64.of_int (!p - d.i_pos))
                    ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
         | _ -> assert false in
@@ -1001,6 +1024,12 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
     | Resolved_base of int64 * Uid.t * kind
     | Resolved_node of int64 * Uid.t * kind * int * Uid.t
 
+  let pp ppf = function
+    | Unresolved_base offset -> Fmt.pf ppf "(unresolved base %Ld)" offset
+    | Unresolved_node -> Fmt.pf ppf "unresolved node"
+    | Resolved_base (offset, uid, _) -> Fmt.pf ppf "(resolved base <%a> %Ld)" Uid.pp uid offset
+    | Resolved_node (offset, uid, _, _, _) -> Fmt.pf ppf "(resolved node <%a> %Ld)" Uid.pp uid offset
+
   let uid_of_status = function
     | Resolved_node (_, uid, _, _, _) | Resolved_base (_, uid, _) -> uid
     | Unresolved_node ->
@@ -1102,6 +1131,10 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
   let is_not_unresolved_base = function
     | Unresolved_base _ -> false
     | _ -> true
+
+  let is_resolved = function
+    | Unresolved_base _ | Unresolved_node -> false
+    | Resolved_base _ | Resolved_node _ -> true
 
   let unresolved_base ~cursor = Unresolved_base cursor
   let unresolved_node = Unresolved_node

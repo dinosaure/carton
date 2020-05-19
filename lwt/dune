@@ -1,4 +1,4 @@
 (library
  (name carton_lwt)
  (public_name carton-lwt)
- (libraries carton lwt))
+ (libraries carton carton.thin lwt))

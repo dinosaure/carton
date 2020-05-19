@@ -1,4 +1,11 @@
 (library
  (name carton)
+ (modules carton dec enc higher h idx sigs zh)
  (public_name carton)
- (libraries digestif duff decompress.zl bigstringaf psq fmt))
+ (libraries duff decompress.zl bigstringaf psq fmt))
+
+(library
+ (name thin)
+ (modules thin)
+ (public_name carton.thin)
+ (libraries carton cstruct ke))
