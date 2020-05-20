@@ -8,4 +8,4 @@
  (name thin)
  (modules thin)
  (public_name carton.thin)
- (libraries carton cstruct ke))
+ (libraries logs carton cstruct ke))

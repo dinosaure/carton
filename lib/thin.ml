@@ -4,6 +4,9 @@ let blit_from_string src src_off dst dst_off len =
   Bigstringaf.blit_from_string src ~src_off dst ~dst_off ~len
 [@@inline]
 
+let src = Logs.Src.create "thin"
+module Log = (val Logs.src_log src : Logs.LOG)
+
 exception Exists
 
 module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID) = struct
@@ -81,6 +84,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       | `Entry ({ Fp.kind= Base _
                 ; offset; size; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
+        Log.debug (fun m -> m "[+] base object (%d)." n) ; 
         Hashtbl.replace weight offset size ;
         Hashtbl.add where offset n ;
         matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
@@ -88,6 +92,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
                 ; offset; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
+        Log.debug (fun m -> m "[+] ofs object (%d)." n) ;
         Hashtbl.replace weight Int64.(sub offset (Int64.of_int s)) source ;
         Hashtbl.replace weight offset target ;
         Hashtbl.add where offset n ;
@@ -100,6 +105,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       | `Entry ({ Fp.kind= Ref { ptr; target; _ }
                 ; offset; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
+        Log.debug (fun m -> m "[+] ref object (%d)." n) ;
         Hashtbl.replace weight offset target ;
         Hashtbl.add where offset n ;
   
@@ -109,10 +115,13 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
             Hashtbl.add children (`Ref ptr) [ offset ] ) ;
         go decoder
       | `End _ -> return (Ok ())
-      | `Malformed err -> return (Error (`Msg err)) in
+      | `Malformed err ->
+        Log.err (fun m -> m "Got an error: %s." err) ;
+        return (Error (`Msg err)) in
     go decoder >>= function
     | Error _ as err -> return err
     | Ok () ->
+      Log.debug (fun m -> m "First pass on incoming PACK file is done.") ;
       return (Ok ({ Carton.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
                   ; children= (fun ~cursor ~uid ->
                         match Hashtbl.find_opt children (`Ofs cursor),
@@ -163,7 +172,9 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     let map fd ~pos len =
       let len = min len Int64.(to_int (sub weight pos)) in
       Scheduler.inj (map fd ~pos len) in
+    Log.debug (fun m -> m "Start to verify incoming PACK file (second pass).") ;
     Verify.verify ~threads pack ~map ~oracle ~matrix >>= fun () ->
+    Log.debug (fun m -> m "Second pass on incoming PACK file is done.") ;
     let offsets = Hashtbl.fold (fun k _ a -> k :: a) where []
                 |> List.sort Int64.compare
                 |> Array.of_list in
