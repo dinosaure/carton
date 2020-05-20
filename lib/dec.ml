@@ -1058,6 +1058,14 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
     | Resolved_node (_, _, _, _, source) -> Some source
     | Unresolved_node -> Fmt.invalid_arg "Current status is not resolved"
 
+  let rev_mapi f l =
+    let rec rmap_f i accu = function
+      | [] -> accu
+      | a :: l -> rmap_f (succ i) (f i a :: accu) l in
+    rmap_f 0 [] l
+
+  let mapi f l = List.rev (rev_mapi f l)
+
   let rec nodes_of_offsets
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> (fd, Uid.t) t -> kind:kind -> raw -> depth:int -> cursors:int64 list -> Uid.t node list IO.t
     = fun ~map ~oracle t ~kind raw ~depth ~cursors ->
@@ -1076,7 +1084,7 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
         let res = Array.make (List.length cursors) (Leaf ((-1L), Uid.null)) in
 
         let fibers =
-          List.mapi (fun i cursor ->
+          mapi (fun i cursor ->
               uid_of_offset_with_source s ~map ~digest:oracle.digest t ~kind raw ~depth ~cursor |> Scheduler.prj >>= fun uid ->
               match oracle.children ~cursor ~uid with
               | [] ->
