@@ -690,8 +690,11 @@ let uncompress
     let decoder = Zl.Inf.decoder `Manual ~o ~allocate:t.allocate in
     let anchor = cursor in
 
-    let rec go cursor decoder = match Zl.Inf.decode decoder with
-      | `Malformed err -> Fmt.failwith "object <%08Lx>: %s" anchor err
+    let rec go (payload, off, len) cursor decoder = match Zl.Inf.decode decoder with
+      | `Malformed err ->
+        Fmt.epr "@[<hov>%a@]\n%!"
+          (Hxd_string.pp Hxd.O.default) (Bigstringaf.substring payload ~off ~len) ;
+        Fmt.failwith "object <%08Lx>: %s" anchor err
       | `End decoder ->
         let len = Bigstringaf.length o - Zl.Inf.dst_rem decoder in
         assert (!p || (not !p && len = 0)) ;
@@ -704,21 +707,21 @@ let uncompress
         l := Bigstringaf.length o - Zl.Inf.dst_rem decoder ;
         assert (not !p) ; p := true ;
         let decoder = Zl.Inf.flush decoder in
-        (go[@tailcall]) cursor decoder
+        (go[@tailcall]) (payload, off, len) cursor decoder
       | `Await decoder ->
         W.load s ~map t.ws cursor >>= function
         | Some slice ->
           let off = Int64.(to_int (sub cursor slice.W.offset)) in
           let len = slice.W.length - off in
           let decoder = Zl.Inf.src decoder slice.W.payload off len in
-          (go[@tailcall]) Int64.(add slice.W.offset (of_int slice.W.length)) decoder
+          (go[@tailcall]) (slice.W.payload, off, len) Int64.(add slice.W.offset (of_int slice.W.length)) decoder
         | None ->
           let decoder = Zl.Inf.src decoder Bigstringaf.empty 0 0 in
-          (go[@tailcall]) cursor decoder in
+          (go[@tailcall]) (payload, off, len) cursor decoder in
     let off = Int64.(to_int (sub cursor slice.W.offset)) in
     let len = slice.W.length - off in
     let decoder = Zl.Inf.src decoder slice.W.payload off len in
-    go Int64.(add slice.W.offset (of_int slice.W.length)) decoder
+    go (slice.W.payload, off, len) Int64.(add slice.W.offset (of_int slice.W.length)) decoder
 
 let of_delta
   : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> kind -> raw -> depth:int -> cursor:int64 -> W.slice -> (v, s) io
