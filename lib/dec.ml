@@ -1062,7 +1062,7 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> (fd, Uid.t) t -> kind:kind -> raw -> depth:int -> cursors:int64 list -> Uid.t node list IO.t
     = fun ~map ~oracle t ~kind raw ~depth ~cursors ->
       match cursors with
-      | [] -> invalid_arg "Expect at least one cursor"
+      | [] -> IO.return []
       | [ cursor ] ->
         uid_of_offset_with_source s ~map ~digest:oracle.digest t ~kind raw ~depth ~cursor |> Scheduler.prj >>= fun uid ->
         ( match oracle.children ~cursor ~uid with
