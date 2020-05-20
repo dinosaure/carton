@@ -688,9 +688,10 @@ let uncompress
     let p = ref false in
     let o = get_payload raw in
     let decoder = Zl.Inf.decoder `Manual ~o ~allocate:t.allocate in
+    let anchor = cursor in
 
     let rec go cursor decoder = match Zl.Inf.decode decoder with
-      | `Malformed err -> failwith err
+      | `Malformed err -> Fmt.failwith "object <%08Lx>: %s" anchor err
       | `End decoder ->
         let len = Bigstringaf.length o - Zl.Inf.dst_rem decoder in
         assert (!p || (not !p && len = 0)) ;
