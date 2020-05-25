@@ -199,18 +199,18 @@ module type UID = sig
   val pp : t Fmt.t
 end
 
+type 'uid entry = { crc : optint; offset : int64; uid : 'uid }
+
 module N (Uid : UID): sig
   type encoder
 
-  type entry = { crc : optint; offset : int64; uid : Uid.t }
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
-  val encoder : dst -> pack:Uid.t -> entry array -> encoder
+  val encoder : dst -> pack:Uid.t -> Uid.t entry array -> encoder
   val encode : encoder -> [ `Await ] -> [ `Partial | `Ok ]
   val dst_rem : encoder -> int
   val dst : encoder -> Bigstringaf.t -> int -> int -> unit
 end = struct
-  type entry = { crc : optint; offset : int64; uid : Uid.t }
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
   type encoder =
@@ -224,7 +224,7 @@ end = struct
     ; mutable t_max : int
     ; mutable n : int
     ; fanout : int array
-    ; index : entry array
+    ; index : Uid.t entry array
     ; pack : Uid.t
     ; mutable ctx : Uid.ctx
     ; mutable k : encoder -> [ `Await ] -> [ `Partial | `Ok ] }

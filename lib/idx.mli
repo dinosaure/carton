@@ -28,13 +28,14 @@ module type UID = sig
   val pp : t Fmt.t
 end
 
+type 'uid entry = { crc : optint; offset : int64; uid : 'uid }
+
 module N (Uid : UID) : sig
   type encoder
 
-  type entry = { crc : optint; offset : int64; uid : Uid.t }
   type dst = [ `Channel of out_channel | `Buffer of Buffer.t | `Manual ]
 
-  val encoder : dst -> pack:Uid.t -> entry array -> encoder
+  val encoder : dst -> pack:Uid.t -> Uid.t entry array -> encoder
   val encode : encoder -> [ `Await ] -> [ `Partial | `Ok ]
   val dst_rem : encoder -> int
   val dst : encoder -> Bigstringaf.t -> int -> int -> unit
