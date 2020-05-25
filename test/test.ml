@@ -166,7 +166,9 @@ let check_empty_index () =
 let index_of_one_entry () =
   Alcotest.test_case "index of one entry" `Quick @@ fun () ->
   let p = ref 0 and c = ref 0 in
-  let encoder = Idx.encoder `Manual ~pack:(Uid.of_hex "") [| { Idx.crc= Checkseum.Crc32.default; offset= 0L; uid= Uid.null } |] in
+  let encoder = Idx.encoder `Manual ~pack:(Uid.of_hex "") [| { Carton.Dec.Idx.crc= Checkseum.Crc32.default
+                                                             ; offset= 0L
+                                                             ; uid= Uid.null } |] in
   Idx.dst encoder o 0 (Bigstringaf.length o) ;
 
   let rec go () = match Idx.encode encoder `Await with
@@ -305,7 +307,7 @@ let verify_bomb_pack () =
     Array.map (fun (offset, s) ->
         let uid = Verify.uid_of_status s in
         let crc = Hashtbl.find checks offset in
-        { Idx.crc; Idx.offset; Idx.uid }) matrix in
+        { Carton.Dec.Idx.crc; offset; uid }) matrix in
   let oc = open_out "bomb.idx" in
   let encoder = Idx.encoder (`Channel oc) ~pack:hash_expected entries in
   let go () = match Idx.encode encoder `Await with `Partial -> assert false | `Ok -> () in
