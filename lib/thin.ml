@@ -1,5 +1,9 @@
 open Carton
 
+type ('uid, 's) light_load = 'uid -> ((kind * int), 's) io
+type ('uid, 's) heavy_load = 'uid -> (Dec.v, 's) io
+type optint = Optint.t
+
 let blit_from_string src src_off dst dst_off len =
   Bigstringaf.blit_from_string src ~src_off dst ~dst_off ~len
 [@@inline]
@@ -12,6 +16,10 @@ exception Exists
 module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (Uid : UID) = struct
   let ( >>= ) x f = IO.bind x f
   let return x = IO.return x
+
+  let ( >>? ) x f = x >>= function
+    | Ok x -> f x
+    | Error _ as err -> return err
 
   let sched =
     let open Scheduler in
@@ -48,7 +56,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
   let first_pass ~zl_buffer ~digest stream =
     let fl_buffer = Cstruct.create 0x1000 in
     let zl_window = De.make_window ~bits:15 in
-  
+
     let allocate _ = zl_window in
 
     let read_cstruct = read stream in
@@ -61,17 +69,18 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
           go (rest - filled) (Cstruct.shift raw filled) in
       go len fl_buffer in
     let read_bytes () buf ~off ~len = Scheduler.inj (read_bytes () buf ~off ~len) in
-  
+
     Fp.check_header sched read_bytes () |> Scheduler.prj >>= fun (max, _, len) ->
-  
+
     let decoder = Fp.decoder ~o:zl_buffer ~allocate `Manual in
     let decoder = Fp.src decoder (Cstruct.to_bigarray fl_buffer) 0 len in
-  
+
     let children = Hashtbl.create 0x100 in
     let where    = Hashtbl.create 0x100 in
     let weight   = Hashtbl.create 0x100 in
+    let checks   = Hashtbl.create 0x100 in
     let matrix   = Array.make max Verify.unresolved_node in
-  
+
     let rec go decoder = match Fp.decode decoder with
       | `Await decoder ->
         read_cstruct 0 fl_buffer >>= fun len ->
@@ -82,66 +91,63 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
         read_cstruct 0 (Cstruct.shift fl_buffer keep) >>= fun len ->
         go (Fp.src decoder (Cstruct.to_bigarray fl_buffer) 0 (keep + len))
       | `Entry ({ Fp.kind= Base _
-                ; offset; size; _ }, decoder) ->
+                ; offset; size; crc; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
-        Log.debug (fun m -> m "[+] base object (%d)." n) ; 
+        Log.debug (fun m -> m "[+] base object (%d)." n) ;
         Hashtbl.replace weight offset size ;
         Hashtbl.add where offset n ;
+        Hashtbl.add checks offset crc ;
         matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
         go decoder
       | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
-                ; offset; _ }, decoder) ->
+                ; offset; crc; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
         Log.debug (fun m -> m "[+] ofs object (%d)." n) ;
         Hashtbl.replace weight Int64.(sub offset (Int64.of_int s)) source ;
         Hashtbl.replace weight offset target ;
         Hashtbl.add where offset n ;
-  
+        Hashtbl.add checks offset crc ;
+
         ( try let vs = Hashtbl.find children (`Ofs Int64.(sub offset (of_int s))) in
             Hashtbl.replace children (`Ofs Int64.(sub offset (of_int s))) (offset :: vs)
           with Not_found ->
             Hashtbl.add children (`Ofs Int64.(sub offset (of_int s))) [ offset ] ) ;
         go decoder
       | `Entry ({ Fp.kind= Ref { ptr; target; _ }
-                ; offset; _ }, decoder) ->
+                ; offset; crc; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
         Log.debug (fun m -> m "[+] ref object (%d)." n) ;
         Hashtbl.replace weight offset target ;
         Hashtbl.add where offset n ;
-  
+        Hashtbl.add checks offset crc ;
+
         ( try let vs = Hashtbl.find children (`Ref ptr) in
             Hashtbl.replace children (`Ref ptr) (offset :: vs)
           with Not_found ->
             Hashtbl.add children (`Ref ptr) [ offset ] ) ;
         go decoder
-      | `End _ -> return (Ok ())
+      | `End uid -> return (Ok uid)
       | `Malformed err ->
         Log.err (fun m -> m "Got an error: %s." err) ;
         return (Error (`Msg err)) in
-    go decoder >>= function
-    | Error _ as err -> return err
-    | Ok () ->
-      Log.debug (fun m -> m "First pass on incoming PACK file is done.") ;
-      return (Ok ({ Carton.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
-                  ; children= (fun ~cursor ~uid ->
-                        match Hashtbl.find_opt children (`Ofs cursor),
-                              Hashtbl.find_opt children (`Ref uid) with
-                        | Some a, Some b -> List.sort_uniq compare (a @ b)
-                        | Some x, None | None, Some x -> x
-                        | None, None -> [])
-                  ; digest= digest
-                  ; weight= (fun ~cursor -> Hashtbl.find weight cursor) },
-                  matrix, where, children))
+    go decoder >>? fun uid ->
+    Log.debug (fun m -> m "First pass on incoming PACK file is done.") ;
+    return (Ok ({ Carton.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
+                ; children= (fun ~cursor ~uid ->
+                      match Hashtbl.find_opt children (`Ofs cursor),
+                            Hashtbl.find_opt children (`Ref uid) with
+                      | Some a, Some b -> List.sort_uniq compare (a @ b)
+                      | Some x, None | None, Some x -> x
+                      | None, None -> [])
+                ; digest= digest
+                ; weight= (fun ~cursor -> Hashtbl.find weight cursor) },
+                matrix, where, checks, children, uid))
 
   type ('path, 'fd, 'error) fs =
     { create : 'path -> ('fd, 'error) result IO.t
     ; append : 'fd -> string -> unit IO.t
     ; map : 'fd -> pos:int64 -> int -> Bigstringaf.t IO.t
-    ; close : 'fd -> unit IO.t }
-
-  let ( >>? ) x f = x >>= function
-    | Ok x -> f x
-    | Error _ as err -> return err
+    ; close : 'fd -> (unit, 'error) result IO.t }
 
   module Set = Set.Make(Uid)
 
@@ -150,7 +156,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     Array.init (Array.length a) (fun i -> a.(i), b.(i))
 
   let share l0 l1 =
-    try List.iter (fun v -> if List.exists (( = ) v) l1 then raise Exists) l0 ; false
+    try List.iter (fun (v, _) -> if List.exists (Int64.equal v) l1 then raise Exists) l0 ; false
     with Exists -> true
 
   let verify ?(threads= 4) ~digest path { create; append; map; close; } stream =
@@ -165,7 +171,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
         weight := Int64.add !weight (Int64.of_int len) ;
         return res
       | none -> return none in
-    first_pass ~zl_buffer ~digest stream >>? fun (oracle, matrix, where, children) ->
+    first_pass ~zl_buffer ~digest stream >>? fun (oracle, matrix, where, checks, children, uid) ->
     let weight = !weight in
     let pack = Carton.Dec.make fd ~allocate ~z:zl_buffer ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
         (fun _ -> assert false) in
@@ -178,9 +184,17 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     let offsets = Hashtbl.fold (fun k _ a -> k :: a) where []
                 |> List.sort Int64.compare
                 |> Array.of_list in
-    let unresolveds = Array.fold_left (fun unresolveds (offset, status) ->
-        if Verify.is_resolved status then unresolveds
-        else offset :: unresolveds) [] (zip offsets matrix) in
+    let unresolveds, resolveds =
+      let fold (unresolveds, resolveds) (offset, status) =
+        if Verify.is_resolved status
+        then
+          let uid = Verify.uid_of_status status in
+          let crc = Hashtbl.find checks offset in
+          unresolveds, ({ Carton.Dec.Idx.crc; offset; uid } :: resolveds)
+        else
+          let crc = Hashtbl.find checks offset in
+          ((offset, crc) :: unresolveds), resolveds in
+      Array.fold_left fold ([], []) (zip offsets matrix) in
     let requireds =
       Hashtbl.fold (fun k vs a -> match k with
           | `Ofs _ -> a
@@ -188,18 +202,17 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
             if share unresolveds vs
             then Set.add uid a else a)
       children Set.empty in
-    close fd >>= fun () ->
-    return (Ok (Hashtbl.length where, Set.elements requireds, weight))
+    close fd >>? fun () ->
+    return (Ok (Hashtbl.length where, Set.elements requireds, unresolveds, resolveds, weight, uid))
 
   let find _ = assert false
   let vuid = { Carton.Enc.uid_ln= Uid.length
              ; Carton.Enc.uid_rw= Uid.to_raw_string }
 
-  type light_load = Uid.t -> (Carton.kind * int) IO.t
-  type heavy_load = Uid.t -> Carton.Dec.v IO.t
-  type transmit = brk:int64 -> (bytes * int * int) IO.t
+  type nonrec light_load = (Uid.t, Scheduler.t) light_load
+  type nonrec heavy_load = (Uid.t, Scheduler.t) heavy_load
 
-  let canonicalize ~light_load ~heavy_load ~transmit path { create; append; close; _ } n uids weight =
+  let canonicalize ~light_load ~heavy_load ~src ~dst { create; append; close; map; _ } n uids weight =
     let b =
       { Carton.Enc.o= Bigstringaf.create De.io_buffer_size
       ; Carton.Enc.i= Bigstringaf.create De.io_buffer_size
@@ -207,61 +220,59 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       ; Carton.Enc.w= De.make_window ~bits:15 } in
     let ctx = ref Uid.empty in
     let cursor = ref 0L in
-    let heavy_load uid = Scheduler.inj (heavy_load uid) in
-    create path >>= function
-    | Error _ as err -> return err
-    | Ok fd ->
-      let header = Bigstringaf.create 12 in
-      Carton.Enc.header_of_pack ~length:(n + List.length uids) header 0 12 ;
-      let hdr = Bigstringaf.to_string header in
-      append fd hdr >>= fun () ->
-      ctx := Uid.feed !ctx header ;
-      cursor := Int64.add !cursor 12L ;
-      let encode_base uid =
-        light_load uid >>= fun (kind, length) ->
-        let entry = Carton.Enc.make_entry ~kind ~length uid in
-        Carton.Enc.entry_to_target sched ~load:heavy_load entry |> Scheduler.prj >>= fun target ->
-        Carton.Enc.encode_target sched ~b ~find ~load:heavy_load ~uid:vuid target ~cursor:(Int64.to_int !cursor)
-        |> Scheduler.prj >>= fun (len, encoder) ->
-        let rec go encoder = match Carton.Enc.N.encode ~o:b.o encoder with
-          | `Flush (encoder, len) ->
-            append fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
-            ctx := Uid.feed !ctx ~off:0 ~len b.o ;
-            cursor := Int64.add !cursor (Int64.of_int len) ;
-            let encoder =
-              Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
-            go encoder
-          | `End -> return () in
-        append fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
-        ctx := Uid.feed !ctx ~off:0 ~len b.o ;
-        cursor := Int64.add !cursor (Int64.of_int len) ;
-        let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
-        go encoder in
-      let rec go = function
-        | [] -> return ()
-        | uid :: uids ->
-          encode_base uid >>= fun () -> go uids in
-      go uids >>= fun () ->
-      let max = Int64.sub weight (Int64.of_int Uid.length) in
-      let rec go brk =
-        transmit ~brk >>= fun (payload, off, len) ->
-        let llen = Int64.of_int len in
-        if Int64.add brk llen > max
-        then
-          let llen = Int64.sub max brk in
-          let len = Int64.to_int llen in
-          let payload = Bytes.sub_string payload off len in
-          append fd payload >>= fun () ->
-          ctx := Uid.feed !ctx (Bigstringaf.of_string payload ~off:0 ~len) ;
-          cursor := Int64.add !cursor llen ;
-          let uid = Uid.get !ctx in
+    let light_load uid = Scheduler.prj (light_load uid) in
+    create dst >>? fun fd ->
+    let header = Bigstringaf.create 12 in
+    Carton.Enc.header_of_pack ~length:(n + List.length uids) header 0 12 ;
+    let hdr = Bigstringaf.to_string header in
+    append fd hdr >>= fun () ->
+    ctx := Uid.feed !ctx header ;
+    cursor := Int64.add !cursor 12L ;
+    let encode_base uid =
+      light_load uid >>= fun (kind, length) ->
+      let entry = Carton.Enc.make_entry ~kind ~length uid in
+      let anchor = !cursor in
+      let crc = ref Checkseum.Crc32.default in
+      Carton.Enc.entry_to_target sched ~load:heavy_load entry |> Scheduler.prj >>= fun target ->
+      Carton.Enc.encode_target sched ~b ~find ~load:heavy_load ~uid:vuid target ~cursor:(Int64.to_int anchor)
+      |> Scheduler.prj >>= fun (len, encoder) ->
+      let rec go encoder = match Carton.Enc.N.encode ~o:b.o encoder with
+        | `Flush (encoder, len) ->
+          append fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
+          ctx := Uid.feed !ctx ~off:0 ~len b.o ;
+          crc := Checkseum.Crc32.digest_bigstring b.o 0 len !crc ;
+          cursor := Int64.add !cursor (Int64.of_int len) ;
+          let encoder =
+            Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+          go encoder
+        | `End -> return { Carton.Dec.Idx.crc= !crc; offset= anchor; uid; } in
+      append fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
+      ctx := Uid.feed !ctx ~off:0 ~len b.o ;
+      crc := Checkseum.Crc32.digest_bigstring b.o 0 len !crc ;
+      cursor := Int64.add !cursor (Int64.of_int len) ;
+      let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+      go encoder in
+    let rec go acc = function
+      | [] -> return (List.rev acc)
+      | uid :: uids ->
+        encode_base uid >>= fun entry -> go (entry :: acc) uids in
+    go [] uids >>= fun entries ->
+    let shift = Int64.sub !cursor 12L in
+    let top = Int64.sub weight (Int64.of_int Uid.length) in
+    let rec go src pos =
+      let max = (Int64.sub top pos) in
+      let len = min max (Int64.mul 1024L 1024L) in
+      let len = Int64.to_int len in
+      map src ~pos len >>= fun raw ->
+      append fd (Bigstringaf.to_string raw) >>= fun () ->
+      ctx := Uid.feed !ctx raw ;
+      cursor := Int64.add !cursor (Int64.of_int len) ;
+      if Int64.add pos (Int64.of_int len) < top
+      then go src (Int64.add pos (Int64.of_int len))
+      else
+        ( let uid = Uid.get !ctx in
           append fd (Uid.to_raw_string uid) >>= fun () ->
-          close fd >>= fun () ->
-          return (Ok Int64.(add !cursor (of_int Uid.length)))
-        else
-          append fd (Bytes.sub_string payload off len) >>= fun () ->
-          ctx := Uid.feed !ctx (Bigstringaf.of_string (Bytes.unsafe_to_string payload) ~off:off ~len) ;
-          cursor := Int64.add !cursor llen ;
-          go (Int64.add brk llen) in
-      go 12L
+          return (Ok (Int64.(add !cursor (of_int Uid.length)), uid)) ) in
+    create src >>? fun src -> go src 12L >>? fun (weight, uid) ->
+    close fd >>? fun () -> return (Ok (shift, weight, uid, entries))
 end
