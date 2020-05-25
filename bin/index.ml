@@ -107,7 +107,7 @@ let first_pass ~digest fpath =
 
 exception Invalid_pack
 
-module Idx = Carton.Dec.Idx.N(Uid)
+module Enc = Carton.Dec.Idx.N(Uid)
 
 let index ~digest threads v output fpath =
   verbose := v ;
@@ -141,9 +141,9 @@ let index ~digest threads v output fpath =
     Array.map (fun (offset, s) ->
         let uid = Verify.uid_of_status s in
         let crc = Hashtbl.find checks offset in
-        { Idx.crc; Idx.offset; Idx.uid }) matrix in
-  let encoder = Idx.encoder (`Channel oc) ~pack entries in
-  let go () = match Idx.encode encoder `Await with `Partial -> assert false | `Ok -> () in
+        { Carton.Dec.Idx.crc; offset; uid }) matrix in
+  let encoder = Enc.encoder (`Channel oc) ~pack entries in
+  let go () = match Enc.encode encoder `Await with `Partial -> assert false | `Ok -> () in
   go () ; oc_close () ; Fmt.pr "%a\n%!" Uid.pp pack ; Ok ()
 
 open Cmdliner
