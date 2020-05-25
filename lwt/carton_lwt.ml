@@ -198,6 +198,16 @@ module Enc = struct
 end
 
 module Thin = struct
-  module Make (Uid : Carton.UID) =
-    Thin.Make (Lwt_scheduler) (Lwt_io) (Uid)
+  type 'uid light_load = 'uid -> (Carton.kind * int) Lwt.t
+  type 'uid heavy_load = 'uid -> Carton.Dec.v Lwt.t
+  type optint = Optint.t
+
+  module Make (Uid : Carton.UID) = struct
+    include Thin.Make (Lwt_scheduler) (Lwt_io) (Uid)
+
+    let canonicalize ~light_load ~heavy_load ~src ~dst fs n requireds weight =
+      let light_load uid = inj (light_load uid) in
+      let heavy_load uid = inj (heavy_load uid) in
+      canonicalize ~light_load ~heavy_load ~src ~dst fs n requireds weight
+  end
 end

@@ -187,12 +187,16 @@ module Enc : sig
 end
 
 module Thin : sig
+  type 'uid light_load = 'uid -> (Carton.kind * int) Lwt.t
+  type 'uid heavy_load = 'uid -> Carton.Dec.v Lwt.t
+  type optint = Optint.t
+
   module Make (Uid : Carton.UID) : sig
     type ('path, 'fd, 'error) fs =
       { create : 'path -> ('fd, 'error) result Lwt.t
       ; append : 'fd -> string -> unit Lwt.t
       ; map : 'fd -> pos:int64 -> int -> Bigstringaf.t Lwt.t
-      ; close : 'fd -> unit Lwt.t }
+      ; close : 'fd -> (unit, 'error) result Lwt.t }
 
     val verify
       :  ?threads:int
@@ -200,21 +204,17 @@ module Thin : sig
       -> 'path
       -> ('path, 'fd, [> `Msg of string ] as 'error) fs
       -> (unit -> (string * int * int) option Lwt.t)
-      -> (int * Uid.t list * int64, 'error) result Lwt.t
+      -> (int * Uid.t list * (int64 * optint) list * Uid.t Dec.Idx.entry list * int64 * Uid.t, 'error) result Lwt.t
 
-    type light_load = Uid.t -> (Carton.kind * int) Lwt.t
-    type heavy_load = Uid.t -> Carton.Dec.v Lwt.t
-    type transmit = brk:int64 -> (bytes * int * int) Lwt.t
-  
     val canonicalize
-      :  light_load:light_load
-      -> heavy_load:heavy_load
-      -> transmit:transmit
-      -> 'path
+      :  light_load:Uid.t light_load
+      -> heavy_load:Uid.t heavy_load
+      -> src:'path
+      -> dst:'path
       -> ('path, 'fd, [> `Msg of string ] as 'error) fs
       -> int
       -> Uid.t list
       -> int64
-      -> (int64, 'error) result Lwt.t
+      -> (int64 * int64 * Uid.t * Uid.t Dec.Idx.entry list, 'error) result Lwt.t
   end
 end
