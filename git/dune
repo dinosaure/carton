@@ -1,0 +1,11 @@
+(library
+ (name carton_git)
+ (public_name carton-git)
+ (modules carton_git)
+ (libraries carton))
+
+(library
+ (name carton_git_unix)
+ (public_name carton-git.unix)
+ (modules carton_git_unix)
+ (libraries fpath carton-lwt carton-git lwt.unix))

@@ -104,6 +104,7 @@ let bsearch idx hash =
   let { off; _ } = go abs_off len in
   Int32.to_int a + (off - abs_off) / idx.uid_ln
 
+(* XXX(dinosaure): FIXME! It does not work at some points. *)
 let isearch idx hash =
   let n = string_get_int8 hash 0 in
   let a = if n = 0 then 0l else get_int32_be idx.mp (fanout_offset + 4 * (n - 1)) in
@@ -116,7 +117,8 @@ let isearch idx hash =
   let uid_lnf = float_of_int idx.uid_ln in
 
   let rec go low high =
-    if low == high
+    if low > high then raise_notrace Not_found ;
+    if low == high || low + idx.uid_ln == high
     then ( let cmp = compare_bigstring idx { off= low; len= idx.uid_ln } hash in
            if cmp == 0
            then { off= low; len= idx.uid_ln }
@@ -133,9 +135,10 @@ let isearch idx hash =
       let cmp = compare_bigstring idx { off; len= idx.uid_ln } hash in
 
       if cmp == 0 then { off; len= idx.uid_ln }
-      else if cmp > 0
-      then (go[@tailcall]) low (off - idx.uid_ln)
-      else (go[@tailcall]) (off + idx.uid_ln) high in
+      else
+      ( if cmp > 0
+        then (go[@tailcall]) low (off - idx.uid_ln)
+        else (go[@tailcall]) (off + idx.uid_ln) high ) in
   if len < 0 then raise_notrace Not_found ;
 
   let { off; _ } = go abs_off (abs_off + len) in
@@ -143,7 +146,7 @@ let isearch idx hash =
 
 let find idx hash =
   let hash = idx.uid_rw hash in
-  match isearch idx hash with
+  match bsearch idx hash with
   | n ->
     let crcs_offset = 8 + (256 * 4) + (idx.n * idx.uid_ln) in
     let values_offset = 8 + (256 * 4) + (idx.n * idx.uid_ln) + (idx.n * 4) in
@@ -156,7 +159,7 @@ let find idx hash =
 
 let exists idx uid =
   let uid = idx.uid_rw uid in
-  match isearch idx uid with
+  match bsearch idx uid with
   | _ -> true
   | exception Not_found -> false
 

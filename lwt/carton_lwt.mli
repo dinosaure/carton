@@ -1,3 +1,11 @@
+type lwt
+
+val lwt : lwt Carton.scheduler
+external inj : 'a Lwt.t -> ('a, lwt) Carton.io = "%identity"
+external prj : ('a, lwt) Carton.io -> 'a Lwt.t = "%identity"
+
+module Scheduler : Carton.SCHEDULER with type +'a s = 'a Lwt.t
+
 module Dec : sig
   module W : sig
     type 'fd t

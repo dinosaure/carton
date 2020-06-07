@@ -1,5 +1,9 @@
 open Lwt_io
 
+type lwt = Lwt_io.lwt
+external inj : 'a Lwt.t -> ('a, lwt) Carton.io = "%identity"
+external prj : ('a, lwt) Carton.io -> 'a Lwt.t = "%identity"
+
 let lwt_bind x f =
   let open Lwt.Infix in
   inj (prj x >>= fun x -> prj (f x))
@@ -10,6 +14,8 @@ let lwt_return x = inj (Lwt.return x) [@@inline]
 let lwt =
   { Carton.bind= lwt_bind
   ; Carton.return= lwt_return }
+
+module Scheduler = Lwt_scheduler
 
 module Dec = struct
   module W = struct
