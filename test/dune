@@ -1,6 +1,6 @@
 (executable
  (name test)
- (libraries bos checkseum.c digestif.c mmap unix threads carton alcotest))
+ (libraries base64 bos checkseum.c digestif.c mmap unix threads carton alcotest))
 
 (rule
  (alias runtest)

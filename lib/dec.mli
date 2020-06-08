@@ -9,7 +9,10 @@ module W : sig
     ; payload : Bigstringaf.t }
   and ('fd, 's) map = 'fd -> pos:int64 -> int -> (Bigstringaf.t, 's) io
 
+  val length : int64
+
   val make : 'fd -> 'fd t
+  val load : 's scheduler -> map:('fd, 's) map -> 'fd t -> int64 -> (slice option, 's) io
 end
 
 type weight = private int
@@ -71,6 +74,18 @@ end
 
 type ('fd, 'uid) t
 (** Type of state used to access to any objects into a [Carton] file. *)
+
+(**/*)
+
+val header_of_entry
+  :  's scheduler
+  -> map:('fd, 's) W.map
+  -> ('fd, 'uid) t
+  -> int64
+  -> W.slice
+  -> ((int * int * int * W.slice), 's) io
+
+(**/*)
 
 val with_z : Bigstringaf.t -> ('fd, 'uid) t -> ('fd, 'uid) t
 val with_w : 'fd W.t -> ('fd, 'uid) t -> ('fd, 'uid) t

@@ -94,6 +94,9 @@ let bsearch idx hash =
 
   let rec go sub_off sub_len =
     let len = (sub_len / (2 * idx.uid_ln)) * idx.uid_ln in
+    (* XXX(dinosaure): prevent a wrong comparison with something outside the
+       hashes table. *)
+    if sub_off + len = hashes_offset + (idx.uid_ln * idx.n) then raise_notrace Not_found ;
     let cmp = compare_bigstring idx { off= sub_off + len; len } hash in
 
     if cmp == 0 then ( { off= sub_off + len; len } )

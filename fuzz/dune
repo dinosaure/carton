@@ -1,0 +1,17 @@
+(executable
+ (name pack_headers)
+ (modules pack_headers)
+ (libraries crowbar bigstringaf carton))
+
+(executable
+ (name binary_search)
+ (modules binary_search)
+ (libraries crowbar bigstringaf carton))
+
+(rule
+ (alias runtest)
+ (action (run ./pack_headers.exe)))
+
+(rule
+ (alias runtest)
+ (action (run ./binary_search.exe)))

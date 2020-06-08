@@ -1,4 +1,85 @@
+let weights =
+  Alcotest.test_case "weight" `Quick @@ fun () ->
+  Alcotest.(check int) "0" (Carton.Dec.null :> int) 0 ;
+  Alcotest.(check int) "1" (Carton.Dec.weight_of_int_exn 1 :> int) 1 ;
+  Alcotest.(check int) "2" (Carton.Dec.weight_of_int_exn 2 :> int) 2 ;
+  Alcotest.(check int) "3" (Carton.Dec.weight_of_int_exn 3 :> int) 3 ;
+  let weight_of_int_exn = Invalid_argument "weight_of_int_exn" in
+  Alcotest.check_raises "-1" weight_of_int_exn (fun () -> ignore @@ Carton.Dec.weight_of_int_exn (-1)) ;
+  Alcotest.check_raises "-2" weight_of_int_exn (fun () -> ignore @@ Carton.Dec.weight_of_int_exn (-2)) ;
+  Alcotest.check_raises "-3" weight_of_int_exn (fun () -> ignore @@ Carton.Dec.weight_of_int_exn (-3)) ;
+;;
+
+let randomize payload =
+  for i = 0 to Bigstringaf.length payload - 1 do
+    Bigstringaf.set payload i (Char.chr (Random.bits () land 0xff)) ;
+  done ;
+;;
+
+let seed = "OYfrfVoWdfZgHS18ubCo4ChABW+SstWbVXUya2moM2Y="
+let seed = Base64.decode_exn seed
+let seed =
+  let res = Array.make (String.length seed / 2) 0 in
+  for i = 0 to (String.length seed / 2) - 1
+  do res.(i) <- (Char.code seed.[i * 2] lsl 8) lor (Char.code seed.[i * 2 + 1]) done ;
+  res
+
+let () = Random.full_init seed
+
 open Prelude
+
+let failf fmt = Fmt.kstrf Alcotest.fail fmt
+
+let bigstringaf =
+  Alcotest.testable
+    Fmt.(using Bigstringaf.to_string string)
+    (fun a b -> String.equal (Bigstringaf.to_string a) (Bigstringaf.to_string b))
+
+let physical_equal =
+  Alcotest.testable
+    (fun ppf _ -> Fmt.string ppf "#ptr")
+    (fun a b -> a == b)
+
+let loads =
+  Alcotest.test_case "load" `Quick @@ fun () ->
+  let payload = Bigstringaf.create 0x1000 in
+  randomize payload ;
+  let do_mmap = ref false in
+  let map payload ~pos len =
+    if pos < 0L then failf "mmap: index out of bounds" ;
+    if pos > Int64.of_int (Bigstringaf.length payload) then failf "mmap: index out of bounds" ;
+    let max = Int64.sub (Int64.of_int (Bigstringaf.length payload)) pos in
+    let len = min max (Int64.of_int len) in
+    let len = Int64.to_int len in
+    do_mmap := true ;
+    Us.inj (Bigstringaf.sub payload ~off:(Int64.to_int pos) ~len) in
+  let w = Carton.Dec.W.make payload in
+  let slice0 = Us.prj (Carton.Dec.W.load unix ~map w 0L) in
+  Alcotest.(check bool)  "first load" (Option.is_some slice0) true ;
+  let slice0 = Option.get slice0 in
+  let chunk = Int64.to_int Carton.Dec.W.length in
+  Alcotest.(check bool)  "first load" !do_mmap true ;
+  Alcotest.(check int64) "first load: offset" slice0.Carton.Dec.W.offset 0L ;
+  Alcotest.(check int)   "first load: length" slice0.Carton.Dec.W.length (min (Bigstringaf.length payload) chunk) ;
+  Alcotest.(check bigstringaf) "first load: contents"
+    (Bigstringaf.sub payload ~off:0 ~len:(min (Bigstringaf.length payload) chunk)) slice0.Carton.Dec.W.payload ;
+  do_mmap := false ; (* reset *)
+  let slice1 = Us.prj (Carton.Dec.W.load unix ~map w 0L) in
+  Alcotest.(check bool)  "second load" (Option.is_some slice1) true ;
+  let slice1 = Option.get slice1 in
+  Alcotest.(check bool)  "second load" !do_mmap false ;
+  Alcotest.(check int64) "second load: offset" slice1.Carton.Dec.W.offset 0L ;
+  Alcotest.(check int)   "second load: length" slice1.Carton.Dec.W.length (min (Bigstringaf.length payload) chunk) ;
+  Alcotest.(check bigstringaf) "second load: contents"
+    (Bigstringaf.sub payload ~off:0 ~len:(min (Bigstringaf.length payload) chunk)) slice1.Carton.Dec.W.payload ;
+  Alcotest.(check physical_equal) "no allocation" slice0 slice1 ;
+  let slice2 = Us.prj (Carton.Dec.W.load unix ~map w 100L) in
+  Alcotest.(check bool)  "third load" (Option.is_some slice2) true ;
+  let slice2 = Option.get slice2 in
+  Alcotest.(check bool)  "third load" !do_mmap false ;
+  Alcotest.(check physical_equal) "no allocation" slice0 slice2 ;
+  (* TODO(dinosaure): an other round to check [do_mmap = true] with [w]. *)
+;;
 
 let pp_kind ppf = function
   | `A -> Fmt.string ppf "a"
@@ -521,7 +602,9 @@ let pack_bomb_pack () =
 
 let () =
   Alcotest.run "carton"
-    [ "encoder", [ test_empty_pack ()
+    [ "weights", [ weights ]
+    ; "loads",   [ loads ]
+    ; "encoder", [ test_empty_pack ()
                  ; index_of_empty_pack ()
                  ; index_of_one_entry ()
                  ; pack_bomb_pack () ]

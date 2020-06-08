@@ -400,6 +400,7 @@ module W = struct
   (* XXX(dinosaure): memoization. *)
 
   let window_length = Int64.mul 1024L 1024L
+  let length = window_length
 
   let heavy_load
     : type fd s. s scheduler -> map:(fd, s) map -> fd t -> int64 -> (slice option, s) io
@@ -586,21 +587,25 @@ let header_of_entry ({ bind; return; } as s) ~map t cursor slice =
         return consume in
   fiber >>= fun consume ->
 
-  let c = ref (Char.code (Bigstringaf.get !slice.W.payload !i_pos)) in
-  consume () ;
-  let kind = (!c asr 4) land 7 in
-  let size = ref (!c land 15) in
-  let shft = ref 4 in
-
-  while !c land 0x80 != 0
-  do
-    c := Char.code (Bigstringaf.get !slice.W.payload !i_pos) ;
+  try
+    let c = ref (Char.code (Bigstringaf.get !slice.W.payload !i_pos)) in
     consume () ;
-    size := !size + ((!c land 0x7f) lsl !shft) ;
-    shft := !shft + 7 ;
-  done ;
+    let kind = (!c asr 4) land 7 in
+    let size = ref (!c land 15) in
+    let shft = ref 4 in
 
-  return (kind, !size, !i_pos, !slice)
+    while !c land 0x80 != 0
+    do
+      c := Char.code (Bigstringaf.get !slice.W.payload !i_pos) ;
+      consume () ;
+      size := !size + ((!c land 0x7f) lsl !shft) ;
+      shft := !shft + 7 ;
+    done ;
+
+    return (kind, !size, !i_pos, !slice)
+  with (Invalid_argument _index_out_of_bounds) ->
+    let i_pos = Int64.(to_int (sub cursor !slice.W.offset)) in
+    return (0, 0, i_pos, !slice)
 
 let rec weight_of_ref_delta
   : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> cursor:int64 -> W.slice -> (weight, s) io
