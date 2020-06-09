@@ -63,5 +63,6 @@ type b =
   ; w : De.window
   ; o : Bigstringaf.t }
 
+val encode_header : o:Bigstringaf.t -> int -> int -> int
 val header_of_pack : length:int -> Bigstringaf.t -> int -> int -> unit
 val encode_target : 's scheduler -> b:b -> find:('uid, 's) find -> load:('uid, 's) load -> uid:'uid uid -> 'uid q -> cursor:int -> (int * N.encoder, 's) io

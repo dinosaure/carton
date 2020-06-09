@@ -429,13 +429,14 @@ type b =
   ; o : Bigstringaf.t }
 
 let encode_header ~o kind length =
+  if length < 0 then invalid_arg "encode_header: length must be positive" ;
   let c = ref ((kind lsl 4) lor (length land 15)) in
   let l = ref (length asr 4) in
   let p = ref 0 in
   let n = ref 1 in
 
   while !l != 0 do
-    Bigstringaf.set o !p (Char.unsafe_chr (!c lor 0x80)) ; incr p ;
+    Bigstringaf.set o !p (Char.chr ((!c lor 0x80) land 0xff)) ; incr p ;
     c := !l land 0x7f ;
     l := !l asr 7 ;
     incr n ;
