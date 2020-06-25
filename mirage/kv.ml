@@ -99,7 +99,7 @@ module Make
           let ( >>= ) = scheduler.Carton.bind in
           let ( >>| ) x f = x >>= fun x -> scheduler.Carton.return (f x) in
 
-          Carton.Dec.weight_of_offset scheduler ~map pack ~weight:Carton.Dec.null ~cursor:offset >>= fun weight ->
+          Carton.Dec.weight_of_offset scheduler ~map pack ~weight:Carton.Dec.null offset >>= fun weight ->
           Carton.Dec.path_of_offset scheduler ~map pack ~cursor:offset >>= fun path ->
           let raw = Carton.Dec.make_raw ~weight in
           Carton.Dec.of_offset_with_path scheduler ~map pack ~path raw ~cursor:offset >>| fun v ->

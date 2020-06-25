@@ -46,7 +46,7 @@ let of_off ~hex ~hxd off fpath =
 
   let fiber () =
     let ( >>= ) = unix.Carton.bind in
-    Carton.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Carton.Dec.null ~cursor:off >>= fun weight ->
+    Carton.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Carton.Dec.null off >>= fun weight ->
     let raw = Carton.Dec.make_raw ~weight in
     Carton.Dec.of_offset unix ~map:unix_map pack raw ~cursor:off >>= fun v ->
     close_idx () ; unix.Carton.return v in

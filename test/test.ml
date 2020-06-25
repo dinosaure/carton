@@ -42,7 +42,8 @@ let physical_equal =
 
 let loads =
   Alcotest.test_case "load" `Quick @@ fun () ->
-  let payload = Bigstringaf.create 0x1000 in
+  let chunk = Int64.to_int Carton.Dec.W.length in
+  let payload = Bigstringaf.create (chunk * 2) in
   randomize payload ;
   let do_mmap = ref false in
   let map payload ~pos len =
@@ -57,7 +58,6 @@ let loads =
   let slice0 = Us.prj (Carton.Dec.W.load unix ~map w 0L) in
   Alcotest.(check bool)  "first load" (Option.is_some slice0) true ;
   let slice0 = Option.get slice0 in
-  let chunk = Int64.to_int Carton.Dec.W.length in
   Alcotest.(check bool)  "first load" !do_mmap true ;
   Alcotest.(check int64) "first load: offset" slice0.Carton.Dec.W.offset 0L ;
   Alcotest.(check int)   "first load: length" slice0.Carton.Dec.W.length (min (Bigstringaf.length payload) chunk) ;
@@ -78,7 +78,15 @@ let loads =
   let slice2 = Option.get slice2 in
   Alcotest.(check bool)  "third load" !do_mmap false ;
   Alcotest.(check physical_equal) "no allocation" slice0 slice2 ;
-  (* TODO(dinosaure): an other round to check [do_mmap = true] with [w]. *)
+  do_mmap := false ; (* reset *)
+  let slice3 = Us.prj (Carton.Dec.W.load unix ~map w (Int64.of_int chunk)) in
+  Alcotest.(check bool)  "four load" (Option.is_some slice3) true ;
+  let slice3 = Option.get slice3 in
+  Alcotest.(check bool)  "four load" !do_mmap true ;
+  Alcotest.(check int64) "four load: offset" slice3.Carton.Dec.W.offset (Int64.of_int chunk) ;
+  Alcotest.(check int)   "four load: length" slice3.Carton.Dec.W.length (min (Bigstringaf.length payload) chunk) ;
+  Alcotest.(check bigstringaf) "four load: contents"
+    (Bigstringaf.sub payload ~off:chunk ~len:(min (Bigstringaf.length payload) chunk)) slice3.Carton.Dec.W.payload ;
 ;;
 
 let pp_kind ppf = function
@@ -409,7 +417,7 @@ let first_entry_of_bomb_pack () =
   let fiber () =
     let ( >>= ) = unix.Carton.bind in
 
-    Carton.Dec.weight_of_offset unix ~map pack ~weight:Carton.Dec.null ~cursor:12L >>= fun weight ->
+    Carton.Dec.weight_of_offset unix ~map pack ~weight:Carton.Dec.null 12L >>= fun weight ->
     let raw = Carton.Dec.make_raw ~weight in
     Carton.Dec.of_offset unix ~map pack raw ~cursor:12L >>= fun v ->
     unix.Carton.return v in
@@ -490,7 +498,7 @@ let unpack_bomb_pack () =
     let return = unix.Carton.return in
     let ( >>= ) = unix.Carton.bind in
     let cursor = Verify.offset_of_status status in
-    Carton.Dec.weight_of_offset unix ~map pack ~weight:Carton.Dec.null ~cursor >>= fun weight ->
+    Carton.Dec.weight_of_offset unix ~map pack ~weight:Carton.Dec.null cursor >>= fun weight ->
     let raw = Carton.Dec.make_raw ~weight in
     Carton.Dec.of_offset unix ~map pack raw ~cursor >>= fun _ -> return () in
   Array.iter (fun s ->
@@ -516,7 +524,7 @@ let pack_bomb_pack () =
     match Hashtbl.find bomb_index uid with
     | cursor ->
       Carton.Dec.weight_of_offset unix ~map pack
-        ~weight:Carton.Dec.null ~cursor >>= fun weight ->
+        ~weight:Carton.Dec.null cursor >>= fun weight ->
       let raw = Carton.Dec.make_raw ~weight in
       Carton.Dec.of_offset unix ~map pack raw ~cursor
     | exception Not_found ->
@@ -528,7 +536,7 @@ let pack_bomb_pack () =
         let return = unix.Carton.return in
         let ( >>= ) = unix.Carton.bind in
         Carton.Dec.weight_of_offset unix ~map pack
-          ~weight:Carton.Dec.null ~cursor >>= fun weight ->
+          ~weight:Carton.Dec.null cursor >>= fun weight ->
         return (weight :> int) in
       Carton.Enc.make_entry
         ~kind:(Verify.kind_of_status s)
@@ -600,6 +608,144 @@ let pack_bomb_pack () =
   let uid = Alcotest.testable Uid.pp Uid.equal in
   Alcotest.(check uid) "hash" res hash
 
+let cycle () =
+  Alcotest.test_case "cycle" `Quick @@ fun () ->
+  let a = Bigstringaf.create 0x100 in
+  let b = Bigstringaf.create 0x100 in
+  randomize a ;
+  randomize b ;
+  let ea = Carton.Enc.make_entry ~kind:`A ~length:(Bigstringaf.length a) ~delta:(Carton.Enc.From `B) `A in
+  let eb = Carton.Enc.make_entry ~kind:`A ~length:(Bigstringaf.length b) ~delta:(Carton.Enc.From `A) `B in
+
+  let load = function
+    | `A -> Us.inj (Carton.Dec.v ~kind:`A a)
+    | `B -> Us.inj (Carton.Dec.v ~kind:`A b) in
+  let ta = Us.prj (Carton.Enc.entry_to_target unix ~load ea) in
+  let tb = Us.prj (Carton.Enc.entry_to_target unix ~load eb) in
+
+  let offsets = Hashtbl.create 0x10 in
+  let find uid = match Hashtbl.find offsets uid with
+    | v -> Us.inj (Some v)
+    | exception Not_found -> Us.inj None in
+
+  let uid =
+    { Carton.Enc.uid_ln= 1
+    ; Carton.Enc.uid_rw= (function
+          | `A -> "a"
+          | `B -> "b") } in
+
+  let b =
+    { Carton.Enc.o= Bigstringaf.create De.io_buffer_size
+    ; Carton.Enc.i= Bigstringaf.create De.io_buffer_size
+    ; Carton.Enc.q= De.Queue.create 0x10000
+    ; Carton.Enc.w= De.make_window ~bits:15 } in
+
+  let ctx = ref Uid.empty in
+  let output_bigstring oc buf ~off ~len =
+    ctx := Uid.feed !ctx buf ~off ~len ;
+    let s = Bigstringaf.substring buf ~off ~len in
+    output_string oc s in
+
+  let oc = open_out "cycle.pack" in
+  let targets = [| ta; tb |] in
+
+  let cursor = ref 12 in
+  let iter target =
+    let return = unix.Carton.return in
+    let ( >>= ) = unix.Carton.bind in
+
+    Hashtbl.add offsets (Carton.Enc.target_uid target) !cursor ;
+    Carton.Enc.encode_target unix
+      ~b ~find ~load ~uid target ~cursor:!cursor >>= fun (len, encoder) ->
+    let rec go encoder = match Carton.Enc.N.encode ~o:b.o encoder with
+      | `Flush (encoder, len) ->
+        output_bigstring oc b.o ~off:0 ~len ;
+        cursor := !cursor + len ;
+        let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+        go encoder
+      | `End -> () in
+    output_bigstring oc b.o ~off:0 ~len ;
+    cursor := !cursor + len ;
+    let encoder = Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
+    go encoder ; return () in
+  let iter target = Us.prj (iter target) in
+
+  let header = Bigstringaf.create 12 in
+  Carton.Enc.header_of_pack ~length:(Array.length targets) header 0 12 ;
+  output_bigstring oc header ~off:0 ~len:12 ;
+  Array.iter iter targets ;
+  let hash = Uid.get !ctx in
+  output_string oc (Uid.to_raw_string hash) ;
+  close_out oc ;
+
+  Alcotest.(check pass) "cycle.pack" () () ;
+
+  let fd = Unix.openfile "cycle.pack" Unix.[ O_RDONLY ] 0o644 in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
+  let pack = Carton.Dec.make { fd; mx; } ~z ~allocate
+      ~uid_ln:1 ~uid_rw:(function "a" -> `A | "b" -> `B | v -> Fmt.invalid_arg "invalid uid: %S" v)
+      (fun uid -> Int64.of_int (Hashtbl.find offsets uid)) in
+
+  (* XXX(dinosaure): must fail! *)
+  try
+    let fiber =
+      let cursor = Int64.of_int (Hashtbl.find offsets `B) in
+      let ( >>= ) = unix.Carton.bind in
+      Carton.Dec.weight_of_offset unix ~map pack
+        ~weight:Carton.Dec.null cursor >>= fun weight ->
+      let raw = Carton.Dec.make_raw ~weight in
+      Carton.Dec.of_offset unix ~map pack raw ~cursor in
+    let _ = Us.prj fiber in
+    Alcotest.failf "We did not discovered our cycle."
+  with Carton.Dec.Cycle -> Alcotest.(check pass) "cycle" () ()
+
+module Index_stream_decoder = Carton.Dec.Idx.M (IO) (Uid)
+
+let decode_index_stream () =
+  Alcotest.test_case "decode index stream" `Quick @@ fun () ->
+  let ic = open_in "git-bomb.idx" in
+  let device = Carton.Dec.Idx.Device.device () in
+  let uid = Carton.Dec.Idx.Device.create device in
+  let tp = Bytes.create 0x1000 in
+  let fiber =
+    let open Rresult in
+    Index_stream_decoder.create device uid >>= fun fd ->
+    let rec go () =
+      let len = 1 + Random.int (Bytes.length tp - 1) in
+      let len = input ic tp 0 len in
+      if len = 0
+      then
+        ( Gc.minor () ; Gc.full_major ()
+            (* XXX(dinosaure): we must ensure that underlying value kept by [device]
+               is available as long as we keep [uid].
+               TODO(dinosaure): we should add test to ensure that [device] did not
+               keep our value if we don't keep [uid]. *)
+        ; close_in ic ; Index_stream_decoder.close device fd )
+      else
+        ( Index_stream_decoder.append device fd (Bytes.sub_string tp 0 len)
+        ; go () ) in
+    Gc.minor () ; Gc.full_major () ; go () in
+  match fiber with
+  | Ok () ->
+    Alcotest.(check pass) "index decoder" () () ;
+    let ic = Unix.openfile "git-bomb.idx" Unix.[ O_RDONLY ] 0o644 in
+    let ln = (Unix.fstat ic).Unix.st_size in
+    let mp = Mmap.V1.map_file ic ~pos:0L Bigarray.char Bigarray.c_layout false [| ln |] in
+    Unix.close ic ;
+
+    let payload = Carton.Dec.Idx.Device.project device uid in
+    let index0 = Carton.Dec.Idx.make (Bigarray.array1_of_genarray mp)
+        ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+    let index1 = Carton.Dec.Idx.make payload
+        ~uid_ln:Uid.length ~uid_rw:Uid.to_raw_string ~uid_wr:Uid.of_raw_string in
+    Carton.Dec.Idx.iter
+      ~f:(fun ~uid ~offset ~crc:_ -> match Carton.Dec.Idx.find index0 uid with
+         | Some (_, offset') -> Alcotest.(check int64) (Fmt.strf "%a" Uid.pp uid) offset offset'
+         | None -> Alcotest.failf "%a not found" Uid.pp uid)
+      index1
+  | Error err ->
+    Alcotest.failf "Error while decoding IDX file: %a" Index_stream_decoder.pp_error err
+
 let () =
   Alcotest.run "carton"
     [ "weights", [ weights ]
@@ -607,10 +753,12 @@ let () =
     ; "encoder", [ test_empty_pack ()
                  ; index_of_empty_pack ()
                  ; index_of_one_entry ()
-                 ; pack_bomb_pack () ]
+                 ; pack_bomb_pack ()
+                 ; cycle () ]
     ; "decoder", [ valid_empty_pack ()
                  ; verify_empty_pack ()
                  ; check_empty_index ()
                  ; verify_bomb_pack ()
                  ; first_entry_of_bomb_pack ()
-                 ; unpack_bomb_pack () ] ]
+                 ; unpack_bomb_pack ()
+                 ; decode_index_stream () ] ]

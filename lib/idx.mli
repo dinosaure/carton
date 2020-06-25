@@ -40,3 +40,34 @@ module N (Uid : UID) : sig
   val dst_rem : encoder -> int
   val dst : encoder -> Bigstringaf.t -> int -> int -> unit
 end
+
+(** Memory safe IDX decoder.
+
+    The goal of this library is to provide a way to decode
+   the IDX file as a stream. *)
+
+module Device : sig
+  type 'uid t
+  type uid
+
+  val device : unit -> _ t
+  val create : 'uid t -> uid
+  val project : 'uid t -> uid -> Bigstringaf.t
+end
+
+module M
+    (IO : sig type +'a t val bind : 'a t -> ('a -> 'b t) -> 'b t val return : 'a -> 'a t end)
+    (Uid : sig include UID val of_raw_string : string -> t val null : t end) : sig
+  type t = Uid.t Device.t
+
+  type uid = Device.uid
+  type fd
+
+  type error
+
+  val pp_error : error Fmt.t
+
+  val create : t -> uid -> (fd, error) result IO.t
+  val append : t -> fd -> string -> unit IO.t
+  val close : t -> fd -> (unit, error) result IO.t
+end

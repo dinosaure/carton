@@ -50,7 +50,7 @@ let of_off ~(digest:Uid.t Carton.Dec.digest) off fpath =
 
   let fiber () =
     let ( >>= ) = unix.Carton.bind in
-    Carton.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Carton.Dec.null ~cursor:off >>= fun weight ->
+    Carton.Dec.weight_of_offset unix ~map:unix_map pack ~weight:Carton.Dec.null off >>= fun weight ->
     Carton.Dec.path_of_offset unix ~map:unix_map pack ~cursor:off >>= fun path ->
     let raw = Carton.Dec.make_raw ~weight in
     Carton.Dec.of_offset_with_path unix ~map:unix_map pack ~path raw ~cursor:off >>= fun v ->

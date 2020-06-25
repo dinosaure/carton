@@ -6,7 +6,7 @@ type elt =
 
 type t = elt list
 
-module T = struct
+module Pretty = struct
   type ('uid, 'x) g =
     | Kind : ('uid, [ `A | `B | `C | `D ]) g
     | String : string -> ('uid, string) g
@@ -149,4 +149,4 @@ let format ~pp_kind ~pp_uid fmt ppf (kind, uid) =
       fmt in
   Fmt.pf ppf "%s" (String.concat "" lst)
 
-let scan ~uid_wr fformat s = T.extract ~uid_wr fformat s
+let scan ~uid_wr fformat s = Pretty.extract ~uid_wr fformat s

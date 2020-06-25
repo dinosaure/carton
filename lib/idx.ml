@@ -20,12 +20,18 @@ let get_int64_be =
   else fun buf off -> swap64 (get_int64 buf off)
 
 external string_get_int16 : string -> int -> int = "%caml_string_get16"
+external string_get_int32 : string -> int -> int32 = "%caml_string_get32"
 external string_get_int64 : string -> int -> int64 = "%caml_string_get64"
 
 let string_get_int16_be =
   if Sys.big_endian
   then fun buf off -> string_get_int16 buf off
   else fun buf off -> swap16 (string_get_int16 buf off)
+
+let string_get_int32_be =
+  if Sys.big_endian
+  then fun buf off -> string_get_int32 buf off
+  else fun buf off -> swap32 (string_get_int32 buf off)
 
 let string_get_int64_be =
   if Sys.big_endian
@@ -386,7 +392,8 @@ end = struct
   let encoder dst ~pack index =
     Array.sort (fun { uid= a; _ } { uid= b; _ } -> Uid.compare a b) index ;
     let fanout = Array.make 256 0 in
-    Array.iter (fun { uid; _ } -> let n = Char.code (Uid.to_raw_string uid).[0] in fanout.(n) <- fanout.(n) + 1) index ;
+    Array.iter (fun { uid; _ } ->
+        let n = Char.code (Uid.to_raw_string uid).[0] in fanout.(n) <- fanout.(n) + 1) index ;
     let o, o_pos, o_max = match dst with
       | `Manual -> Bigstringaf.empty, 1, 0
       | `Buffer _
@@ -403,4 +410,88 @@ end = struct
 
   let dst_rem = o_rem
   let encode e = e.k e
+end
+
+module Device = struct
+  type 'uid value = Bigstringaf.t
+
+  type key = Key
+  type uid = key ref
+  type 'uid t = (key ref, 'uid value ref) Ephemeron.K1.t
+
+  let device () = Ephemeron.K1.create ()
+
+  let create tbl =
+    let key = ref Key in
+    Ephemeron.K1.set_key tbl key ; key
+
+  let project tbl uid =
+    assert (Ephemeron.K1.get_key tbl = Some uid) ;
+    match Option.get (Ephemeron.K1.get_data tbl) with
+    | { contents= v } -> v
+end
+
+module M
+    (IO : sig type +'a t val bind : 'a t -> ('a -> 'b t) -> 'b t val return : 'a -> 'a t end)
+    (Uid : sig include UID val of_raw_string : string -> t val null : t end) = struct
+  open IO
+
+  let ( >>= ) x f = bind x f
+
+  type fd =
+    { mutable buffer : Bigstringaf.t
+    ; mutable capacity : int
+    ; mutable length : int }
+
+  let enlarge fd more =
+    let _old_length = fd.length in
+    let old_capacity = fd.capacity in
+    let new_capacity = ref old_capacity in
+    while old_capacity + more > !new_capacity
+    do new_capacity := 2 * !new_capacity done ;
+    if !new_capacity > Sys.max_string_length
+    then ( if old_capacity + more <= Sys.max_string_length
+           then new_capacity := Sys.max_string_length
+           else failwith "Too big buffer" ) ;
+    let new_buffer = Bigstringaf.create !new_capacity in
+    Bigstringaf.blit fd.buffer ~src_off:0 new_buffer ~dst_off:0 ~len:fd.length ;
+    fd.buffer <- new_buffer ;
+    fd.capacity <- !new_capacity ;
+    (* XXX(dinosaure): these asserts wants to rely on some assumptions
+       even if we use [enlarge] into a preemptive thread as [Stdlib.Buffer].
+       However, with [lwt], it should be fine to use it and avoid these
+       assertions. *)
+    (* assert (fd.position + more <= fd.capacity) ; *)
+    (* assert (old_length + more <= fd.capacity) ; *)
+    ()
+
+  type t = Uid.t Device.t
+  type uid = Device.uid
+
+  type error = [ `Already_computed ]
+
+  let pp_error ppf = function
+    | `Already_computed -> Fmt.string ppf "IDX already computed"
+
+  let create tbl uid =
+    assert (Ephemeron.K1.get_key tbl = Some uid) ;
+    Ephemeron.K1.set_data tbl (ref Bigstringaf.empty) ;
+    return (Ok { buffer= Bigstringaf.create 0x1000
+               ; capacity= 0x1000
+               ; length= 0 })
+
+  let append _ fd str =
+    let len = String.length str in
+    let new_length = fd.length + len in
+    if new_length > fd.capacity then enlarge fd len ;
+    Bigstringaf.blit_from_string str ~src_off:0 fd.buffer ~dst_off:fd.length ~len ;
+    fd.length <- new_length ;
+    IO.return ()
+
+  let close tbl fd =
+    let result = Bigstringaf.sub fd.buffer ~off:0 ~len:fd.length in
+    ( match Ephemeron.K1.get_data tbl with
+    | Some value -> value := result
+    | None -> assert false ) ;
+    IO.return (Ok ())
 end

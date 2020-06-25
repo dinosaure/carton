@@ -10,6 +10,7 @@ module W : sig
   and ('fd, 's) map = 'fd -> pos:int64 -> int -> (Bigstringaf.t, 's) io
 
   val length : int64
+  val reset : 'fd t -> unit
 
   val make : 'fd -> 'fd t
   val load : 's scheduler -> map:('fd, 's) map -> 'fd t -> int64 -> (slice option, 's) io
@@ -132,8 +133,10 @@ val make : 'fd -> z:Zl.bigstring -> allocate:(int -> Zl.window) -> uid_ln:int ->
 
 (** {3 Weight of object.} *)
 
-val weight_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> cursor:int64 -> (weight, 's) io
-val weight_of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> 'uid -> (weight, 's) io
+exception Cycle
+
+val weight_of_offset : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> ?visited:int64 list -> int64 -> (weight, 's) io
+val weight_of_uid : 's scheduler -> map:('fd, 's) W.map -> ('fd, 'uid) t -> weight:weight -> ?visited:int64 list -> 'uid -> (weight, 's) io
 
 (** {3 Value of object.} *)
 

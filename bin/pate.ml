@@ -19,7 +19,8 @@ let cmds = [ Verify.cmd ~digest
            ; Stat.cmd ~digest
            ; Index.cmd ~digest
            ; Unpack.cmd ~digest
-           ; Pack.cmd ~digest ]
+           ; Pack.cmd ~digest
+           ; Graph.cmd ~digest ]
 let main = `Help (`Pager, None)
 
 let cmd =

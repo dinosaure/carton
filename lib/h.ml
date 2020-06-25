@@ -1,7 +1,3 @@
-[@@@warning "-32-34"]
-
-let () = Printexc.record_backtrace true
-
 type bigstring = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
 
 let bigstring_empty = Bigarray.Array1.create Bigarray.char Bigarray.c_layout 0
@@ -17,9 +13,6 @@ external unsafe_get_uint32 : bigstring -> int -> int32 = "%caml_bigstring_get32"
 external unsafe_set_uint32 : bigstring -> int -> int32 -> unit = "%caml_bigstring_set32"
 external unsafe_set_uint8 : bigstring -> int -> int -> unit = "%caml_ba_set_1"
 external unsafe_set_char : bigstring -> int -> char -> unit = "%caml_ba_set_1"
-
-external bytes_unsafe_set_uint32 : bytes -> int -> int32 -> unit = "%caml_bytes_set32"
-let bytes_unsafe_set_uint8 : bytes -> int -> int -> unit = fun buf off v -> Bytes.set buf off (Char.unsafe_chr (v land 0xff))
 
 let unsafe_blit src src_off dst dst_off len =
   let a = bigstring_sub src src_off len in

@@ -8,11 +8,11 @@ module Make
     (Scheduler : SCHEDULER)
     (IO : IO with type 'a t = 'a Scheduler.s)
     (Uid : UID) : sig
-  type ('path, 'fd, 'error) fs =
-    { create : 'path -> ('fd, 'error) result IO.t
-    ; append : 'fd -> string -> unit IO.t
-    ; map : 'fd -> pos:int64 -> int -> Bigstringaf.t IO.t
-    ; close : 'fd -> (unit, 'error) result IO.t }
+  type ('t, 'path, 'fd, 'error) fs =
+    { create : 't -> 'path -> ('fd, 'error) result IO.t
+    ; append : 't -> 'fd -> string -> unit IO.t
+    ; map : 't -> 'fd -> pos:int64 -> int -> Bigstringaf.t IO.t
+    ; close : 't -> 'fd -> (unit, 'error) result IO.t }
     (** A record to manipulate a {i file-system}.
 
         [create] is like {!Unix.openfile}. It can open a pre-existing ['path] or
@@ -25,8 +25,8 @@ module Make
   val verify
     :  ?threads:int
     -> digest:Uid.t Carton.Dec.digest
-    -> 'path
-    -> ('path, 'fd, [> `Msg of string ] as 'error) fs
+    -> 't -> 'path
+    -> ('t, 'path, 'fd, [> `Msg of string ] as 'error) fs
     -> (unit -> (string * int * int) option IO.t)
     -> (int * Uid.t list * (int64 * optint) list * Uid.t Dec.Idx.entry list * int64 * Uid.t, 'error) result IO.t
   (** [verify ~digest filename fs stream] does the first pass to analyze
@@ -50,7 +50,7 @@ module Make
     -> heavy_load:heavy_load
     -> src:'path
     -> dst:'path
-    -> ('path, 'fd, [> `Msg of string ] as 'error) fs
+    -> 't -> ('t, 'path, 'fd, [> `Msg of string ] as 'error) fs
     -> int
     -> Uid.t list
     -> int64

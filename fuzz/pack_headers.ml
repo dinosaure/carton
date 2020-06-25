@@ -18,18 +18,17 @@ let map payload ~pos len =
     Us.inj (Bigstringaf.sub payload ~off:(Int64.to_int pos) ~len)
 
 let () =
-  Crowbar.add_test ~name:"pack-headers"
+  Crowbar.add_test ~name:"pack-headers never fails"
     Crowbar.[ int64; bytes ] @@ fun pos bytes ->
   let payload = Bigstringaf.of_string bytes ~off:0 ~len:(String.length bytes) in
   let t = Carton.Dec.make payload ~z ~allocate ~uid_ln:20 ~uid_rw:(fun x -> x) (fun _ -> assert false) in
   let kind, length, _pos, _slice =
     Us.prj (Carton.Dec.header_of_entry unix ~map t pos
               { Carton.Dec.W.payload; offset= pos; length= Bigstringaf.length payload; }) in
-  Fmt.epr "kind: %d, length: %d.\n%!"
-    kind length
+  ignore @@ (kind, length)
 
 let () =
-  Crowbar.add_test ~name:"decode <.> encode"
+  Crowbar.add_test ~name:"can decode what we encode"
     Crowbar.[ int8; int ] @@ fun kind length ->
   let kind = kind land 7 in
   let length = abs length in
@@ -42,6 +41,4 @@ let () =
               { Carton.Dec.W.payload; offset= 0L; length= Bigstringaf.length payload; }) in
   Crowbar.check_eq ~pp:Fmt.int kind kind' ;
   Crowbar.check_eq ~pp:Fmt.int length length' ;
-  Fmt.epr "kind: %d, length: %d.\n%!"
-    kind length
 ;;

@@ -18,7 +18,7 @@ end
 
 module type IO = sig
   type +'a t
-  
+
   val bind : 'a t -> ('a -> 'b t) -> 'b t
   val return : 'a -> 'a t
 end
@@ -51,6 +51,7 @@ module Make
     -> Uid.t
     -> (Carton.Dec.v, [> `Msg of string | `Not_found of Uid.t ]) result IO.t
 
+  val exists : Store.t -> (Store.uid, Store.fd, Uid.t) t -> Uid.t -> bool
   val list : Store.t -> (Store.uid, Store.fd, Uid.t) t -> Uid.t list
   val fds : (Store.uid, Store.fd, Uid.t) t -> (Store.fd * int64) list
 end

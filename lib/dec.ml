@@ -185,20 +185,25 @@ module Fp (Uid : UID) = struct
         let _ = Bigstringaf.get_int32_be buf off in
         let v = Bigstringaf.get_int32_be buf (off + 4) |> Int32.to_int in
         let n = Bigstringaf.get_int32_be buf (off + 8) |> Int32.to_int in
+        if v <> 2 then Fmt.invalid_arg "Carton handles only PACKv2" ;
         if d.c == n
         then decode { d with v; n; s= Hash; k= decode; ctx= Uid.feed d.ctx buf ~off ~len:12 }
         else decode { d with v; n; s= Entry; k= decode; ctx= Uid.feed d.ctx buf ~off ~len:12 } in
       refill_12 k d
     | Entry ->
-      let peek_10 k d = peek k (t_peek d 10) in
-      let peek_uid k d = peek k (t_peek d Uid.length) in
+      (* TODO(dinosaure): we need something more robust than [15] where when it's not
+         enough to have the ofs-header and the zlib-header, [decompress] returns
+         an error - because we fill at the beginning the input buffer with [0] (then,
+         we reach end-of-input). *)
+      let peek_15 k d = peek k (t_peek d 15) in
+      let peek_uid k d = peek k (t_peek d (Uid.length + (* zlib *) 2)) in
 
       let k_ref_header crc offset size d =
         let anchor = d.i_pos in
         let uid = Bigstringaf.substring d.i ~off:d.i_pos ~len:Uid.length in
         let uid = Uid.of_raw_string uid in
         let d = { d with i_pos= d.i_pos + Uid.length } in
-        
+
         let z = Zl.Inf.reset d.z in
         let z = Zl.Inf.src z d.i d.i_pos (i_rem d) in
         let crc = Checkseum.Crc32.digest_bigstring d.i anchor (d.i_pos - anchor) crc in
@@ -263,7 +268,7 @@ module Fp (Uid : UID) = struct
           let offset = d.r in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos (!p - d.i_pos) Checkseum.Crc32.default in
 
-          peek_10 (k_ofs_header crc offset !size)
+          peek_15 (k_ofs_header crc offset !size)
             { d with i_pos= !p; r= Int64.add d.r (Int64.of_int (!p - d.i_pos))
                    ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
         | 0b111 ->
@@ -274,7 +279,7 @@ module Fp (Uid : UID) = struct
             { d with i_pos= !p; r= Int64.add d.r (Int64.of_int (!p - d.i_pos))
                    ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len:(!p - d.i_pos) }
         | _ -> assert false in
-      peek_10 k_header d
+      peek_15 k_header d
     | Inflate ({ kind= Base _; crc; _ } as entry) ->
       let rec go z = match Zl.Inf.decode z with
         | `Await z ->
@@ -285,7 +290,7 @@ module Fp (Uid : UID) = struct
                               ; ctx= Uid.feed d.ctx d.i ~off:d.i_pos ~len }
         | `Flush z ->
           go (Zl.Inf.flush z)
-        | `Malformed _ as err -> err
+        | `Malformed err -> `Malformed (Fmt.strf "inflate: %s" err)
         | `End z ->
           let len = i_rem d - Zl.Inf.src_rem z in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
@@ -314,18 +319,18 @@ module Fp (Uid : UID) = struct
         | `Flush z ->
           if !first
           then ( let len = Bigstringaf.length d.o - Zl.Inf.dst_rem z in
-                let x, src_len = variable_length d.o 0 len in
-                let _, dst_len = variable_length d.o x len in
-                source := src_len ; target := dst_len ; first := false ) ;
+                 let x, src_len = variable_length d.o 0 len in
+                 let _, dst_len = variable_length d.o x len in
+                 source := src_len ; target := dst_len ; first := false ) ;
 
           go (Zl.Inf.flush z)
-        | `Malformed _ as err -> err
+        | `Malformed err -> `Malformed (Fmt.strf "inflate: %s" err)
         | `End z ->
           if !first
           then ( let len = Bigstringaf.length d.o - Zl.Inf.dst_rem z in
-                let x, src_len = variable_length d.o 0 len in
-                let _, dst_len = variable_length d.o x len in
-                source := src_len ; target := dst_len ; first := false ) ;
+                 let x, src_len = variable_length d.o 0 len in
+                 let _, dst_len = variable_length d.o x len in
+                 source := src_len ; target := dst_len ; first := false ) ;
 
           let len = i_rem d - Zl.Inf.src_rem z in
           let crc = Checkseum.Crc32.digest_bigstring d.i d.i_pos len crc in
@@ -396,6 +401,8 @@ module W = struct
     ; w= Weak.create (0xffff + 1)
     ; m= 0xffff
     ; fd }
+
+  let reset { w; _ } = Weak.fill w 0 (Weak.length w) None
 
   (* XXX(dinosaure): memoization. *)
 
@@ -565,9 +572,9 @@ let header_of_ofs_delta ({ bind; return; } as s) ~map t cursor slice =
 
   return (!base_offset, !i_pos, !slice)
 
-let header_of_entry ({ bind; return; } as s) ~map t cursor slice =
+let header_of_entry ({ bind; return; } as s) ~map t cursor slice0 =
   let ( >>= ) = bind in
-  let slice = ref slice in
+  let slice = ref slice0 in
   let i_pos = ref Int64.(to_int (sub cursor !slice.W.offset)) in
   let i_rem = !slice.W.length - !i_pos in
 
@@ -604,37 +611,43 @@ let header_of_entry ({ bind; return; } as s) ~map t cursor slice =
 
     return (kind, !size, !i_pos, !slice)
   with (Invalid_argument _index_out_of_bounds) ->
-    let i_pos = Int64.(to_int (sub cursor !slice.W.offset)) in
-    return (0, 0, i_pos, !slice)
+    let i_pos = Int64.(to_int (sub cursor slice0.W.offset)) in
+    return (0, 0, i_pos, slice0)
+
+(* TODO(dinosaure): use [ewah] instead a list to check [visited]. *)
+
+exception Cycle
 
 let rec weight_of_ref_delta
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> cursor:int64 -> W.slice -> (weight, s) io
-  = fun ({ bind; _ } as s) ~map t ~weight ~cursor slice ->
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> ?visited:int64 list -> cursor:int64 -> W.slice -> (weight, s) io
+  = fun ({ bind; _ } as s) ~map t ~weight ?(visited= []) ~cursor slice ->
     let ( >>= ) = bind in
 
     header_of_ref_delta s ~map t cursor slice >>= fun (uid, pos, slice) ->
     weight_of_delta s ~map t ~weight ~cursor:Int64.(add slice.W.offset (of_int pos)) slice >>= fun weight ->
-    (weight_of_uid[@tailcall]) s ~map t ~weight uid
+    (weight_of_uid[@tailcall]) s ~map t ~weight ~visited uid
 
 and weight_of_ofs_delta
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> anchor:int64 -> cursor:int64 -> W.slice -> (weight, s) io
-  = fun ({ bind; _ } as s) ~map t ~weight ~anchor ~cursor slice ->
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> ?visited:int64 list -> anchor:int64 -> cursor:int64 -> W.slice -> (weight, s) io
+  = fun ({ bind; _ } as s) ~map t ~weight ?(visited= []) ~anchor ~cursor slice ->
     let ( >>= ) = bind in
 
     header_of_ofs_delta s ~map t cursor slice >>= fun (base_offset, pos, slice) ->
     weight_of_delta s ~map t ~weight ~cursor:Int64.(add slice.W.offset (of_int pos)) slice >>= fun weight ->
-    (weight_of_offset[@tailcall]) s ~map t ~weight ~cursor:Int64.(sub anchor (of_int base_offset))
+    (weight_of_offset[@tailcall]) s ~map t ~weight ~visited Int64.(sub anchor (of_int base_offset))
 
 and weight_of_uid
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> uid -> (weight, s) io
-  = fun s ~map t ~weight uid ->
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> ?visited:int64 list -> uid -> (weight, s) io
+  = fun s ~map t ~weight ?(visited= []) uid ->
     let cursor = t.fd uid in
-    (weight_of_offset[@tailcall]) s ~map t ~weight ~cursor
+    (weight_of_offset[@tailcall]) s ~map t ~weight ~visited cursor
 
 and weight_of_offset
-  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> cursor:int64 -> (weight, s) io
-  = fun ({ bind; return; } as s) ~map t ~weight ~cursor ->
+  : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> weight:weight -> ?visited:int64 list -> int64 -> (weight, s) io
+  = fun ({ bind; return; } as s) ~map t ~weight ?(visited= []) cursor ->
     let ( >>= ) = bind in
+    if List.exists (Int64.equal cursor) visited then raise Cycle ;
+    let visited = cursor :: visited in
 
     W.load s ~map t.ws cursor >>= function
     | None -> Fmt.failwith "Reach end of pack (ask: %Ld, [weight_of_offset])" cursor
@@ -644,8 +657,8 @@ and weight_of_offset
       match kind with
       | 0b000 | 0b101 -> failwith "bad type"
       | 0b001 | 0b010 | 0b011 | 0b100 -> return (max size weight)
-      | 0b110 -> (weight_of_ofs_delta[@tailcall]) s ~map t ~weight:(max size weight) ~anchor:cursor ~cursor:Int64.(add slice.W.offset (of_int pos)) slice
-      | 0b111 -> (weight_of_ref_delta[@tailcall]) s ~map t ~weight:(max size weight) ~cursor:Int64.(add slice.W.offset (of_int pos)) slice
+      | 0b110 -> (weight_of_ofs_delta[@tailcall]) s ~map t ~weight:(max size weight) ~visited ~anchor:cursor ~cursor:Int64.(add slice.W.offset (of_int pos)) slice
+      | 0b111 -> (weight_of_ref_delta[@tailcall]) s ~map t ~weight:(max size weight) ~visited ~cursor:Int64.(add slice.W.offset (of_int pos)) slice
       | _ -> assert false
 
 type raw =
@@ -732,35 +745,32 @@ let of_delta
 
     let decoder = Zh.M.decoder ~o:t.tmp ~allocate:t.allocate `Manual in
 
-    let rec go cursor decoder = match Zh.M.decode decoder with
+    let rec go cursor raw decoder = match Zh.M.decode decoder with
       | `End decoder ->
         let len = Zh.M.dst_len decoder in
         return { kind; raw; len; depth; }
       | `Malformed err -> failwith err
-      | `Header (src_len, dst_len, decoder) ->
+      | `Header (_src_len, dst_len, decoder) ->
         let source = get_source raw in
         let payload = get_payload raw in
 
-        assert (Bigstringaf.length source >= src_len) ;
-        assert (Bigstringaf.length payload >= dst_len) ;
-
         let decoder = Zh.M.source decoder source in
         let decoder = Zh.M.dst decoder payload 0 dst_len in
-        (go[@tailcall]) cursor decoder
+        (go[@tailcall]) cursor raw decoder
       | `Await decoder ->
         W.load s ~map t.ws cursor >>= function
         | None ->
           let decoder = Zh.M.src decoder Bigstringaf.empty 0 0 in
-          (go[@tailcall]) cursor decoder
+          (go[@tailcall]) cursor raw decoder
         | Some slice ->
           let off = Int64.(to_int (sub cursor slice.W.offset)) in
           let len = slice.W.length - off in
           let decoder = Zh.M.src decoder slice.W.payload off len in
-          (go[@tailcall]) Int64.(add slice.W.offset (of_int slice.W.length)) decoder in
+          (go[@tailcall]) Int64.(add slice.W.offset (of_int slice.W.length)) raw decoder in
     let off = Int64.(to_int (sub cursor slice.W.offset)) in
     let len = slice.W.length - off in
     let decoder = Zh.M.src decoder slice.W.payload off len in
-    go Int64.(add slice.W.offset (of_int slice.W.length)) decoder
+    go Int64.(add slice.W.offset (of_int slice.W.length)) raw decoder
 
 let rec of_ofs_delta
   : type fd uid s. s scheduler -> map:(fd, s) W.map -> (fd, uid) t -> raw -> anchor:int64 -> cursor:int64 -> W.slice -> (v, s) io
@@ -998,7 +1008,7 @@ let uid_of_offset_with_source
         return (digest ~kind ~len:v.len (get_payload raw))
       | 0b111 ->
         header_of_ref_delta s ~map t Int64.(add slice.W.offset (of_int pos)) slice >>= fun (_, pos, slice) ->
-        of_delta s ~map t kind raw ~depth ~cursor:Int64.(add slice.W.offset (of_int pos)) slice >>= fun v ->
+        of_delta s ~map t kind raw ~depth ~cursor:Int64.(add slice.W.offset (of_int pos)) slice >>= fun ({ raw; _ } as v) ->
         return (digest ~kind ~len:v.len (get_payload raw))
       | _ -> assert false
 
@@ -1104,27 +1114,34 @@ module Verify (Uid : UID) (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a S
         IO.return (Array.to_list res)
 
   let weight_of_tree
-    : oracle:Uid.t oracle -> cursor:int64 -> int
-    = fun ~oracle ~cursor ->
-      let rec go cursor w0 =
+    : cursor:int64 -> ?uid:Uid.t -> Uid.t oracle -> int
+    = fun ~cursor ?uid oracle ->
+      let rec go cursor uid w0 =
         let w1 = oracle.weight ~cursor in
-        match oracle.children ~cursor ~uid:Uid.null with
+        let uid = Option.value uid ~default:Uid.null in
+        match oracle.children ~cursor ~uid with
         | [] -> (max : int -> int -> int) w0 w1
         | cursors ->
           let w1 = ref w1 in
-          List.iter (fun cursor -> w1 := go cursor !w1) cursors ;
+          List.iter (fun cursor -> w1 := go cursor None !w1) cursors ;
           (max : int -> int -> int) w0 !w1 in
-      go cursor 0 (* XXX(dinosaure): we can do something which is tail-rec, TODO! *)
+      go cursor uid 0 (* XXX(dinosaure): we can do something which is tail-rec, TODO! *)
 
   let resolver
     : type fd. map:(fd, Scheduler.t) W.map -> oracle:Uid.t oracle -> (fd, Uid.t) t -> cursor:int64 -> Uid.t tree IO.t
     = fun ~map ~oracle t ~cursor ->
-      let weight = weight_of_tree ~oracle ~cursor in
+      let weight = weight_of_tree ~cursor oracle in
       let raw = make_raw ~weight in (* allocation *)
       uid_of_offset s ~map ~digest:oracle.digest t raw ~cursor |> Scheduler.prj >>= fun (kind, uid) ->
       match oracle.children ~cursor ~uid with
       | [] -> IO.return (Base (kind, cursor, uid, []))
       | cursors ->
+        let weight' = weight_of_tree ~cursor ~uid oracle in
+        let raw = if weight' > weight
+          then
+            ( let raw' = make_raw ~weight:weight' in
+              Bigstringaf.blit (get_payload raw) ~src_off:0 (get_payload raw') ~dst_off:0 ~len:weight ; raw' )
+          else raw in
         nodes_of_offsets ~map ~oracle t ~kind (flip raw) ~depth:1 ~cursors >>= fun nodes ->
         IO.return (Base (kind, cursor, uid, nodes))
 

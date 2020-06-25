@@ -4,7 +4,7 @@ val lwt : lwt Carton.scheduler
 external inj : 'a Lwt.t -> ('a, lwt) Carton.io = "%identity"
 external prj : ('a, lwt) Carton.io -> 'a Lwt.t = "%identity"
 
-module Scheduler : Carton.SCHEDULER with type +'a s = 'a Lwt.t
+module Scheduler : Carton.SCHEDULER with type +'a s = 'a Lwt.t and type t = lwt
 
 module Dec : sig
   module W : sig
@@ -89,7 +89,7 @@ module Dec : sig
 
   val make : 'fd -> z:Zl.bigstring -> allocate:(int -> Zl.window) -> uid_ln:int -> uid_rw:(string -> 'uid) -> ('uid -> int64) -> ('fd, 'uid) t
 
-  val weight_of_offset : map:'fd W.map -> ('fd, 'uid) t -> weight:weight -> cursor:int64 -> weight Lwt.t
+  val weight_of_offset : map:'fd W.map -> ('fd, 'uid) t -> weight:weight -> int64 -> weight Lwt.t
   val weight_of_uid : map:'fd W.map -> ('fd, 'uid) t -> weight:weight -> 'uid -> weight Lwt.t
 
   val of_offset : map:'fd W.map -> ('fd, 'uid) t -> raw -> cursor:int64 -> v Lwt.t
@@ -200,17 +200,17 @@ module Thin : sig
   type optint = Optint.t
 
   module Make (Uid : Carton.UID) : sig
-    type ('path, 'fd, 'error) fs =
-      { create : 'path -> ('fd, 'error) result Lwt.t
-      ; append : 'fd -> string -> unit Lwt.t
-      ; map : 'fd -> pos:int64 -> int -> Bigstringaf.t Lwt.t
-      ; close : 'fd -> (unit, 'error) result Lwt.t }
+    type ('t, 'path, 'fd, 'error) fs =
+      { create : 't -> 'path -> ('fd, 'error) result Lwt.t
+      ; append : 't -> 'fd -> string -> unit Lwt.t
+      ; map : 't -> 'fd -> pos:int64 -> int -> Bigstringaf.t Lwt.t
+      ; close : 't -> 'fd -> (unit, 'error) result Lwt.t }
 
     val verify
       :  ?threads:int
       -> digest:Uid.t Carton.Dec.digest
-      -> 'path
-      -> ('path, 'fd, [> `Msg of string ] as 'error) fs
+      -> 't -> 'path
+      -> ('t, 'path, 'fd, [> `Msg of string ] as 'error) fs
       -> (unit -> (string * int * int) option Lwt.t)
       -> (int * Uid.t list * (int64 * optint) list * Uid.t Dec.Idx.entry list * int64 * Uid.t, 'error) result Lwt.t
 
@@ -219,7 +219,8 @@ module Thin : sig
       -> heavy_load:Uid.t heavy_load
       -> src:'path
       -> dst:'path
-      -> ('path, 'fd, [> `Msg of string ] as 'error) fs
+      -> 't
+      -> ('t, 'path, 'fd, [> `Msg of string ] as 'error) fs
       -> int
       -> Uid.t list
       -> int64

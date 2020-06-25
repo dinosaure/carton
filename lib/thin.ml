@@ -54,7 +54,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
   module Fp = Carton.Dec.Fp(Uid)
 
   let first_pass ~zl_buffer ~digest stream =
-    let fl_buffer = Cstruct.create 0x1000 in
+    let fl_buffer = Cstruct.create De.io_buffer_size in
     let zl_window = De.make_window ~bits:15 in
 
     let allocate _ = zl_window in
@@ -81,9 +81,14 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     let checks   = Hashtbl.create 0x100 in
     let matrix   = Array.make max Verify.unresolved_node in
 
+    let replace hashtbl k v =
+      try let v' = Hashtbl.find hashtbl k in if v < v' then Hashtbl.replace hashtbl k v'
+      with Not_found -> Hashtbl.add hashtbl k v in
+
     let rec go decoder = match Fp.decode decoder with
       | `Await decoder ->
         read_cstruct 0 fl_buffer >>= fun len ->
+        Log.debug (fun m -> m "Refill the first-pass state with %d byte(s)." len) ;
         go (Fp.src decoder (Cstruct.to_bigarray fl_buffer) 0 len)
       | `Peek decoder ->
         (* XXX(dinosaure): [Fp] does the compression. *)
@@ -93,8 +98,8 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       | `Entry ({ Fp.kind= Base _
                 ; offset; size; crc; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
-        Log.debug (fun m -> m "[+] base object (%d)." n) ;
-        Hashtbl.replace weight offset size ;
+        Log.debug (fun m -> m "[+] base object (%d) (%Ld)." n offset) ;
+        replace weight offset size ;
         Hashtbl.add where offset n ;
         Hashtbl.add checks offset crc ;
         matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
@@ -102,9 +107,9 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
                 ; offset; crc; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
-        Log.debug (fun m -> m "[+] ofs object (%d)." n) ;
-        Hashtbl.replace weight Int64.(sub offset (Int64.of_int s)) source ;
-        Hashtbl.replace weight offset target ;
+        Log.debug (fun m -> m "[+] ofs object (%d) (%Ld)." n offset) ;
+        replace weight Int64.(sub offset (Int64.of_int s)) source ;
+        replace weight offset target ;
         Hashtbl.add where offset n ;
         Hashtbl.add checks offset crc ;
 
@@ -113,11 +118,11 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
           with Not_found ->
             Hashtbl.add children (`Ofs Int64.(sub offset (of_int s))) [ offset ] ) ;
         go decoder
-      | `Entry ({ Fp.kind= Ref { ptr; target; _ }
+      | `Entry ({ Fp.kind= Ref { ptr; target; source; }
                 ; offset; crc; _ }, decoder) ->
         let n = Fp.count decoder - 1 in
-        Log.debug (fun m -> m "[+] ref object (%d)." n) ;
-        Hashtbl.replace weight offset target ;
+        Log.debug (fun m -> m "[+] ref object (%d) (%Ld) (weight: %d)." n offset (Stdlib.max target source :> int)) ;
+        replace weight offset (Stdlib.max target source) ;
         Hashtbl.add where offset n ;
         Hashtbl.add checks offset crc ;
 
@@ -143,11 +148,11 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
                 ; weight= (fun ~cursor -> Hashtbl.find weight cursor) },
                 matrix, where, checks, children, uid))
 
-  type ('path, 'fd, 'error) fs =
-    { create : 'path -> ('fd, 'error) result IO.t
-    ; append : 'fd -> string -> unit IO.t
-    ; map : 'fd -> pos:int64 -> int -> Bigstringaf.t IO.t
-    ; close : 'fd -> (unit, 'error) result IO.t }
+  type ('t, 'path, 'fd, 'error) fs =
+    { create : 't -> 'path -> ('fd, 'error) result IO.t
+    ; append : 't -> 'fd -> string -> unit IO.t
+    ; map : 't -> 'fd -> pos:int64 -> int -> Bigstringaf.t IO.t
+    ; close : 't -> 'fd -> (unit, 'error) result IO.t }
 
   module Set = Set.Make(Uid)
 
@@ -159,25 +164,26 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     try List.iter (fun (v, _) -> if List.exists (Int64.equal v) l1 then raise Exists) l0 ; false
     with Exists -> true
 
-  let verify ?(threads= 4) ~digest path { create; append; map; close; } stream =
+  let verify ?(threads= 4) ~digest t path { create; append; map; close; } stream =
     let zl_buffer = De.bigstring_create De.io_buffer_size in
     let allocate bits = De.make_window ~bits in
     let weight = ref 0L in
-    create path >>? fun fd ->
+    create t path >>? fun fd ->
     let stream () =
       stream () >>= function
       | Some (buf, off, len) as res ->
-        append fd (String.sub buf off len) >>= fun () ->
+        append t fd (String.sub buf off len) >>= fun () ->
         weight := Int64.add !weight (Int64.of_int len) ;
         return res
       | none -> return none in
+    Log.debug (fun m -> m "Start to analyse the PACK file.") ;
     first_pass ~zl_buffer ~digest stream >>? fun (oracle, matrix, where, checks, children, uid) ->
     let weight = !weight in
     let pack = Carton.Dec.make fd ~allocate ~z:zl_buffer ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
         (fun _ -> assert false) in
     let map fd ~pos len =
       let len = min len Int64.(to_int (sub weight pos)) in
-      Scheduler.inj (map fd ~pos len) in
+      Scheduler.inj (map t fd ~pos len) in
     Log.debug (fun m -> m "Start to verify incoming PACK file (second pass).") ;
     Verify.verify ~threads pack ~map ~oracle ~matrix >>= fun () ->
     Log.debug (fun m -> m "Second pass on incoming PACK file is done.") ;
@@ -202,7 +208,9 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
             if share unresolveds vs
             then Set.add uid a else a)
       children Set.empty in
-    close fd >>? fun () ->
+    close t fd >>? fun () ->
+    Log.debug (fun m -> m "PACK file verified (%d resolved object(s), %d unresolved object(s))"
+                  (List.length resolveds) (List.length unresolveds)) ;
     return (Ok (Hashtbl.length where, Set.elements requireds, unresolveds, resolveds, weight, uid))
 
   let find _ = assert false
@@ -212,7 +220,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
   type nonrec light_load = (Uid.t, Scheduler.t) light_load
   type nonrec heavy_load = (Uid.t, Scheduler.t) heavy_load
 
-  let canonicalize ~light_load ~heavy_load ~src ~dst { create; append; close; map; _ } n uids weight =
+  let canonicalize ~light_load ~heavy_load ~src ~dst t { create; append; close; map; _ } n uids weight =
     let b =
       { Carton.Enc.o= Bigstringaf.create De.io_buffer_size
       ; Carton.Enc.i= Bigstringaf.create De.io_buffer_size
@@ -221,11 +229,11 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
     let ctx = ref Uid.empty in
     let cursor = ref 0L in
     let light_load uid = Scheduler.prj (light_load uid) in
-    create dst >>? fun fd ->
+    create t dst >>? fun fd ->
     let header = Bigstringaf.create 12 in
     Carton.Enc.header_of_pack ~length:(n + List.length uids) header 0 12 ;
     let hdr = Bigstringaf.to_string header in
-    append fd hdr >>= fun () ->
+    append t fd hdr >>= fun () ->
     ctx := Uid.feed !ctx header ;
     cursor := Int64.add !cursor 12L ;
     let encode_base uid =
@@ -238,7 +246,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       |> Scheduler.prj >>= fun (len, encoder) ->
       let rec go encoder = match Carton.Enc.N.encode ~o:b.o encoder with
         | `Flush (encoder, len) ->
-          append fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
+          append t fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
           ctx := Uid.feed !ctx ~off:0 ~len b.o ;
           crc := Checkseum.Crc32.digest_bigstring b.o 0 len !crc ;
           cursor := Int64.add !cursor (Int64.of_int len) ;
@@ -246,7 +254,7 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
             Carton.Enc.N.dst encoder b.o 0 (Bigstringaf.length b.o) in
           go encoder
         | `End -> return { Carton.Dec.Idx.crc= !crc; offset= anchor; uid; } in
-      append fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
+      append t fd (Bigstringaf.substring b.o ~off:0 ~len) >>= fun () ->
       ctx := Uid.feed !ctx ~off:0 ~len b.o ;
       crc := Checkseum.Crc32.digest_bigstring b.o 0 len !crc ;
       cursor := Int64.add !cursor (Int64.of_int len) ;
@@ -263,16 +271,16 @@ module Make (Scheduler : SCHEDULER) (IO : IO with type 'a t = 'a Scheduler.s) (U
       let max = (Int64.sub top pos) in
       let len = min max (Int64.mul 1024L 1024L) in
       let len = Int64.to_int len in
-      map src ~pos len >>= fun raw ->
-      append fd (Bigstringaf.to_string raw) >>= fun () ->
+      map t src ~pos len >>= fun raw ->
+      append t fd (Bigstringaf.to_string raw) >>= fun () ->
       ctx := Uid.feed !ctx raw ;
       cursor := Int64.add !cursor (Int64.of_int len) ;
       if Int64.add pos (Int64.of_int len) < top
       then go src (Int64.add pos (Int64.of_int len))
       else
         ( let uid = Uid.get !ctx in
-          append fd (Uid.to_raw_string uid) >>= fun () ->
+          append t fd (Uid.to_raw_string uid) >>= fun () ->
           return (Ok (Int64.(add !cursor (of_int Uid.length)), uid)) ) in
-    create src >>? fun src -> go src 12L >>? fun (weight, uid) ->
-    close fd >>? fun () -> return (Ok (shift, weight, uid, entries))
+    create t src >>? fun src -> go src 12L >>? fun (weight, uid) ->
+    close t fd >>? fun () -> return (Ok (shift, weight, uid, entries))
 end

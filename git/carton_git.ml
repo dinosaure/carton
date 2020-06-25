@@ -144,6 +144,15 @@ module Make
         List.rev_append !res a in
       Hashtbl.fold fold p.tbl []
 
+  let exists
+    : Store.t -> (Store.uid, Store.fd, Uid.t) t -> Uid.t -> bool
+    = fun _ p uid ->
+      let res = ref false in
+      Hashtbl.iter (fun _ { index; _ } ->
+          if Carton.Dec.Idx.exists index uid
+          then res := true) p.tbl ;
+      !res
+
   let fds : (Store.uid, Store.fd, Uid.t) t -> (Store.fd * int64) list
     = fun { tbl; } ->
       let fold _ { pack; _ } a = (Carton.Dec.fd pack) :: a in

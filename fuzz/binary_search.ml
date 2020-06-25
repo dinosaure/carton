@@ -29,7 +29,4 @@ let () =
   done ;
 
   let index = Carton.Dec.Idx.make index ~uid_ln:20 ~uid_rw:identity ~uid_wr:identity in
-  Fmt.pr "*.idx generated.\n%!" ;
-
-  List.iter (fun v -> Fmt.epr "search.\n%!" ; ignore @@ Carton.Dec.Idx.exists index v) exists ;
-  Fmt.pr "done.\n%!"
+  List.iter (fun v -> ignore @@ Carton.Dec.Idx.exists index v) exists

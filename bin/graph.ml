@@ -1,0 +1,199 @@
+type tree =
+  | Node of int * Uid.t * tree list
+  | Leaf of int * Uid.t
+
+type pack = tree list
+
+let rec tree_to_json = function
+  | Leaf (len, uid) -> `O [ (Uid.to_hex uid), `Float (Float.of_int len) ]
+  | Node (len, uid, children) ->
+    `O [ (Uid.to_hex uid), `Float (Float.of_int len)
+       ; "children", `A (List.map tree_to_json children) ]
+
+let pack_to_json pack = `A (List.map tree_to_json pack)
+
+open Core
+open Prelude
+
+module Fp = Carton.Dec.Fp(Uid)
+module Verify = Carton.Dec.Verify(Uid)(Us)(IO)
+
+let z = De.bigstring_create De.io_buffer_size
+let allocate bits = De.make_window ~bits
+
+let zip a b =
+  if Array.length a <> Array.length b then Fmt.invalid_arg "Array.zip" ;
+  Array.init (Array.length a) (fun i -> a.(i), b.(i))
+
+let () = Printexc.record_backtrace true
+
+let pp_kind ppf = function
+  | `A -> Fmt.string ppf "a"
+  | `B -> Fmt.string ppf "b"
+  | `C -> Fmt.string ppf "c"
+  | `D -> Fmt.string ppf "d"
+
+let first_pass ~digest fpath =
+  let ic = open_in (Fpath.to_string fpath) in
+  let zw = De.make_window ~bits:15 in
+  let allocate _ = zw in
+
+  let max, _, _ = Us.prj (Fp.check_header unix unix_read ic) in
+  seek_in ic 0 ;
+
+  let decoder = Fp.decoder ~o:z ~allocate (`Channel ic) in
+
+  let children = Hashtbl.create 0x100 in
+  let where = Hashtbl.create max in
+  let weight = Hashtbl.create max in
+  let length = Hashtbl.create max in
+  let carbon = Hashtbl.create max in
+  let matrix = Array.make max Verify.unresolved_node in
+
+  let rec go decoder = match Fp.decode decoder with
+    | `Await _ | `Peek _ -> assert false
+    | `Entry ({ Fp.kind= Base _
+              ; offset; size; consumed; _ }, decoder) ->
+      let n = Fp.count decoder - 1 in
+      Hashtbl.add weight offset size ;
+      Hashtbl.add length offset size ;
+      Hashtbl.add carbon offset consumed ;
+      Hashtbl.add where offset n ;
+      matrix.(n) <- Verify.unresolved_base ~cursor:offset ;
+      go decoder
+    | `Entry ({ Fp.kind= Ofs { sub= s; source; target; }
+              ; offset; size; consumed; _ }, decoder) ->
+      let n = Fp.count decoder - 1 in
+      Hashtbl.add weight Int64.(sub offset (Int64.of_int s)) source ;
+      Hashtbl.add weight offset target ;
+      Hashtbl.add length offset size ;
+      Hashtbl.add carbon offset consumed ;
+      Hashtbl.add where offset n ;
+
+      ( try let v = Hashtbl.find children (`Ofs Int64.(sub offset (Int64.of_int s))) in
+          Hashtbl.add children (`Ofs Int64.(sub offset (Int64.of_int s))) (offset :: v)
+        with Not_found ->
+          Hashtbl.add children (`Ofs Int64.(sub offset (Int64.of_int s))) [ offset ] ) ;
+      go decoder
+    | `Entry _ -> assert false (* OBJ_REF *)
+    | `End _ -> close_in ic ; Ok ()
+    | `Malformed _ as err -> Error err in
+  match go decoder with
+  | Error _ as err -> err
+  | Ok () ->
+    Ok ({ Carton.Dec.where= (fun ~cursor -> Hashtbl.find where cursor)
+        ; children= (fun ~cursor ~uid ->
+              match Hashtbl.find_opt children (`Ofs cursor),
+                    Hashtbl.find_opt children (`Ref uid) with
+              | Some a, Some b -> List.sort_uniq compare (a @ b)
+              | Some x, None | None, Some x -> x
+              | None, None -> [])
+        ; digest= digest
+        ; weight= (fun ~cursor -> Hashtbl.find weight cursor) },
+        matrix, where, length, carbon)
+
+exception Invalid_pack
+
+let graph ~digest threads fpath =
+  let open Rresult.R in
+  first_pass ~digest fpath >>= fun (oracle, matrix, where, _, carbon) ->
+  let fd = Unix.openfile (Fpath.to_string fpath) Unix.[ O_RDONLY ] 0o644 in
+  let mx = let st = Unix.LargeFile.fstat fd in st.Unix.LargeFile.st_size in
+  let index _ = raise Not_found in
+  let t = Carton.Dec.make { fd; mx; } ~z ~allocate ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string index in
+
+  Verify.verify ~threads ~map:unix_map ~oracle t ~matrix ;
+
+  let offsets =
+    Hashtbl.fold (fun k _ a -> k :: a) where []
+    |> List.sort Stdlib.compare
+    |> Array.of_list in
+  let matrix = zip offsets matrix in
+  let uids = Hashtbl.create 0x100 in
+  let rec bases acc idx =
+    if idx = Array.length matrix then List.rev acc
+    else
+      let offset, s = matrix.(idx) in
+      let uid = Verify.uid_of_status s in
+      Hashtbl.add uids offset uid ;
+      match Verify.source_of_status s with
+      | Some _ -> bases acc (succ idx)
+      | None ->
+        let len = Hashtbl.find carbon offset in
+        bases ((offset, uid, len) :: acc) (succ idx) in
+  let bases = bases [] 0 in
+  (* TODO(dinosaure): no tail-rec. *)
+  let rec populate (offset, uid, len) =
+    match oracle.children ~cursor:offset ~uid with
+    | [] -> Leaf (len, uid)
+    | children ->
+      let children =
+        let f offset = populate (offset, Hashtbl.find uids offset, Hashtbl.find carbon offset) in
+        List.map f children in
+      Node (len, uid, children) in
+  Ok (List.map populate bases)
+
+let graph ~digest threads fpath output =
+  let open Rresult in
+  graph ~digest threads fpath >>= fun graph ->
+  let json = pack_to_json graph in
+  Bos.OS.File.with_oc output
+    (fun oc () ->
+      let flush buf off len = ignore @@ Stdlib.output oc buf off len in
+      Json.encode flush json ; Ok ()) ()
+  |> Rresult.R.join
+
+open Cmdliner
+
+let existing_fpath ~ext =
+  let parser x = match Fpath.of_string x with
+    | Ok v when Sys.file_exists x ->
+      if Fpath.has_ext ext v then Ok v else Rresult.R.error_msgf "%a has a bad extension" Fpath.pp v
+    | Ok v -> Rresult.R.error_msgf "%a does not exist" Fpath.pp v
+    | Error _ as err -> err in
+  let pp = Fpath.pp in
+  Arg.conv (parser, pp)
+
+let fpath =
+  let parser = Fpath.of_string in
+  let pp = Fpath.pp in
+  Arg.conv (parser, pp)
+
+let uid =
+  let parser x = match Uid.of_hex x with
+    | v -> Ok v
+    | exception (Invalid_argument err) -> Error (`Msg err) in
+  let pp = Uid.pp in
+  Arg.conv (parser, pp)
+
+let pack =
+  let doc = "The pack file." in
+  Arg.(required & pos 0 ~rev:true (some (existing_fpath ~ext:"pack")) None & info [] ~docv:"<pack>.pack" ~doc)
+
+let output =
+  let doc = "JSON file." in
+  Arg.(required & opt (some fpath) None & info [ "o"; "output" ] ~docv:"<output>.json" ~doc)
+
+let number ~default =
+  let parser x =
+    try let x = int_of_string x in if x <= 0 then Ok default else Ok x
+    with _ -> Rresult.R.error_msgf "Invalid number: %S" x in
+  let pp = Fmt.int in
+  Arg.conv (parser, pp)
+
+let threads =
+  let doc = "Specifies the number of threads to spawn when resolving deltas. \
+             This is meant to reduce packing time on multiprocessor machines. \
+             The required amount of memory for the delta search window is however \
+             multiplied by the number of threads." in
+    Arg.(value & opt (number ~default:cpu) cpu & info [ "threads" ] ~doc ~docv:"<n>")
+
+let cmd ~digest =
+  let doc = "Generate a JSON which represents the layout of the PACK file." in
+  let exits = Term.default_exits in
+  let man =
+    [ `S Manpage.s_description
+    ; `P "It generate a JSON file which represents the layout of the \
+          given PACK file. " ] in
+  Term.(const (graph ~digest) $ threads $ pack $ output),
+  Term.info "graph" ~doc ~exits ~man

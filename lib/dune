@@ -2,7 +2,7 @@
  (name carton)
  (modules carton dec enc higher h idx sigs zh)
  (public_name carton)
- (libraries duff decompress.zl bigstringaf psq fmt))
+ (libraries ke duff decompress.zl bigstringaf psq fmt))
 
 (library
  (name thin)

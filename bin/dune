@@ -2,8 +2,8 @@
  (name pate)
  (public_name carton.pate)
  (package carton)
- (modules core fformat get index pack prelude stat uid unpack verify pate)
- (libraries angstrom cmdliner bos fpath rresult carton mmap unix threads digestif.c hxd.string))
+ (modules json core fformat get index pack prelude stat uid unpack verify graph pate)
+ (libraries jsonm angstrom cmdliner bos fpath rresult carton mmap unix threads digestif.c hxd.string))
 
 (executable
  (name scan)

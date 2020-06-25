@@ -68,10 +68,13 @@ module Dec = struct
   let make fd ~z ~allocate ~uid_ln ~uid_rw where =
     Carton.Dec.make fd ~z ~allocate ~uid_ln ~uid_rw where
 
-  let weight_of_offset ~map t ~weight ~cursor =
+  (* XXX(dinosaure): [?visited] disappeared but it's only
+   * about internal use. *)
+
+  let weight_of_offset ~map t ~weight cursor =
     let map fd ~pos len =
       inj (map fd ~pos len) in
-    prj (Carton.Dec.weight_of_offset lwt ~map t ~weight ~cursor)
+    prj (Carton.Dec.weight_of_offset lwt ~map t ~weight cursor)
 
   let weight_of_uid ~map t ~weight uid =
     let map fd ~pos len =
